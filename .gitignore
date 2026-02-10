@@ -1,4 +1,6 @@
+############################################
 # Python
+############################################
 __pycache__/
 *.py[cod]
 *$py.class
@@ -10,14 +12,29 @@ dist/
 build/
 *.whl
 
+# Common tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+pytestdebug.log
+
+############################################
 # Virtual environments
+############################################
 .venv/
 venv/
 ENV/
 env/
 .virtualenv/
 
-# IDE
+############################################
+# IDE / Editor
+############################################
 .vscode/
 .idea/
 *.swp
@@ -25,21 +42,56 @@ env/
 *~
 *.code-workspace
 
-# macOS
+############################################
+# macOS / Windows
+############################################
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
+Thumbs.db
 
-# YOLO models (large binary files)
+############################################
+# Jupyter
+############################################
+.ipynb_checkpoints/
+*.ipynb
+
+############################################
+# Environment variables / secrets
+############################################
+.env
+.env.local
+
+############################################
+# Logs / Output
+############################################
+*.log
+logs/
+output/
+results/
+
+############################################
+# ML / YOLO model artifacts (large binaries)
+############################################
 *.pt
 *.pth
 *.weights
 *.onnx
 *.engine
 *.tflite
+*.ckpt
 
+############################################
+# Ultralytics / experiment tracking outputs
+############################################
+runs/
+wandb/
+mlruns/
+
+############################################
 # Video and image files (large media files)
+############################################
 *.mp4
 *.avi
 *.mov
@@ -48,38 +100,39 @@ env/
 *.flv
 *.wmv
 
-# Data directories
+# If you also generate lots of extracted frames, keep them out of git:
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+############################################
+# Data directories (generated artifacts)
+############################################
 data/
 datasets/
-*.csv
-*.json
-*.yaml
+models/
+
+############################################
+# Configs: keep these tracked
+############################################
 !configs/*.yaml
+!configs/*.yml
 
-# Output/Results
-runs/
-output/
-results/
-logs/
-*.log
+############################################
+# Optional
+!data/**/manifest.json
+!data/**/meta.json
+!data/**/data.yaml
+# !data/**/README.md
+!data/.gitkeep
 
-# Jupyter Notebooks
-.ipynb_checkpoints/
-*.ipynb
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-
-# Environment variables
-.env
-.env.local
-
+############################################
 # Temporary files
+############################################
 *.tmp
 *.temp
 *.bak
 *.cache
+tmp/
+temp/
