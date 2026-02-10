@@ -1,6 +1,6 @@
 import cv2
 
-from prescience.vission.detector import YoloDetector # runs YOLO and returns list of Detection objects
+from prescience.vision.detector import YoloDetector # runs YOLO and returns list of Detection objects
 
 def run(source:int | str = 0, model_path: str = "yolov8n.pt", conf: float = 0.35) -> None:
     """Stream frames from a source and draw detections"""

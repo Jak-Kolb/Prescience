@@ -1,5 +1,5 @@
-import cv2
 
+import cv2
 from collections import deque # list like structure that can keep only the last N points (for trail)
 
 
