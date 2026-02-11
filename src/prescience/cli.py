@@ -47,14 +47,20 @@ def enroll_extract_frames(
 @enroll_app.command("label")
 def enroll_label(
     sku: str = typer.Option(..., help="SKU identifier"),
+    mode: str = typer.Option("quick", help="Training mode: quick|milestone|full"),
+    dataset_scope: str | None = typer.Option(None, help="Dataset scope override: core_new|all"),
+    core_size: int | None = typer.Option(None, help="Core set size for core_new scope"),
     seed_per_bin: int = typer.Option(2, help="Manual seed labels per section"),
     approve_per_bin: int = typer.Option(5, help="Approval labels per section"),
     overwrite: bool = typer.Option(False, help="Relabel already-labeled frames"),
     allow_negatives: bool = typer.Option(True, help="Allow negative labels (empty txt)"),
-    base_model: str = typer.Option("yolov8n.pt", help="Onboarding base model"),
-    imgsz: int = typer.Option(960, help="Training image size"),
-    epochs_stage1: int = typer.Option(30, help="Stage1 epochs"),
-    epochs_stage2: int = typer.Option(60, help="Stage2 epochs"),
+    base_model: str = typer.Option("auto", help="Onboarding base model path or auto"),
+    imgsz: int | None = typer.Option(None, help="Training image size override"),
+    epochs_stage1: int | None = typer.Option(None, help="Stage1 epochs override"),
+    epochs_stage2: int | None = typer.Option(None, help="Stage2 epochs override"),
+    patience: int | None = typer.Option(None, help="Early stop patience override"),
+    freeze: int | None = typer.Option(None, help="Frozen layers override"),
+    workers: int | None = typer.Option(None, help="Dataloader workers override"),
     version: int | None = typer.Option(None, help="Optional final model version number"),
 ) -> None:
     """Run guided onboarding labeling with model-in-the-loop approvals."""
@@ -66,10 +72,16 @@ def enroll_label(
         approve_per_section=approve_per_bin,
         overwrite=overwrite,
         allow_negatives=allow_negatives,
+        mode=mode,
+        dataset_scope=dataset_scope,
+        core_size=core_size,
         base_model=base_model,
         imgsz=imgsz,
         epochs_stage1=epochs_stage1,
         epochs_stage2=epochs_stage2,
+        patience=patience,
+        freeze=freeze,
+        workers=workers,
         version=version,
     )
 
@@ -98,10 +110,16 @@ def enroll_build_profile(
 def train_detector(
     sku: str = typer.Option(..., help="SKU identifier"),
     version: str = typer.Option("v1", help="Model version tag"),
-    epochs: int = typer.Option(60, help="Training epochs"),
-    imgsz: int = typer.Option(960, help="Training image size"),
+    mode: str = typer.Option("quick", help="Training mode: quick|milestone|full"),
+    dataset_scope: str | None = typer.Option(None, help="Dataset scope override: core_new|all"),
+    core_size: int | None = typer.Option(None, help="Core set size for core_new scope"),
+    epochs: int | None = typer.Option(None, help="Training epochs override"),
+    imgsz: int | None = typer.Option(None, help="Training image size override"),
+    patience: int | None = typer.Option(None, help="Early stop patience override"),
+    freeze: int | None = typer.Option(None, help="Frozen layers override"),
+    workers: int | None = typer.Option(None, help="Dataloader workers override"),
     conf: float = typer.Option(0.35, help="Inference confidence default"),
-    base_model: str = typer.Option("yolov8n.pt", help="Base model or prior checkpoint"),
+    base_model: str = typer.Option("auto", help="Base model path or auto"),
 ) -> None:
     """Train a SKU-specific detector from verified labels."""
     from prescience.pipeline.enroll import train_detector_for_sku
@@ -109,8 +127,14 @@ def train_detector(
     train_detector_for_sku(
         sku=sku,
         version=version,
+        mode=mode,
+        dataset_scope=dataset_scope,
+        core_size=core_size,
         epochs=epochs,
         imgsz=imgsz,
+        patience=patience,
+        freeze=freeze,
+        workers=workers,
         conf=conf,
         base_model=base_model,
     )

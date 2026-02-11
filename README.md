@@ -72,10 +72,12 @@ prescience enroll extract-frames \
 prescience enroll label --sku can1_test
 ```
 
+Default mode is `quick` with `base_model=auto`, so retraining resumes from the latest prior SKU best model when available.
+
 3. Train detector:
 
 ```bash
-prescience train detector --sku can1_test --version v1 --epochs 60
+prescience train detector --sku can1_test --version v1
 ```
 
 4. Build embedding profile:
@@ -109,6 +111,38 @@ prescience run \
 ```
 
 8. Open dashboard: `http://127.0.0.1:8000`
+
+## Fast Retraining Modes
+
+- `quick` (default): low-latency iteration (`core_new` dataset scope, early stopping, partial freeze).
+- `milestone`: medium training pass on all labeled images.
+- `full`: longest/highest-quality pass on all labeled images.
+
+Examples:
+
+```bash
+# Quick iterative onboarding retrain from latest prior best model (auto)
+prescience enroll label --sku can1_test --mode quick --version 2
+
+# Milestone detector retrain using all labeled images
+prescience train detector --sku can1_test --version v2 --mode milestone
+
+# Full retrain with explicit overrides
+prescience train detector \
+  --sku can1_test \
+  --version v3 \
+  --mode full \
+  --imgsz 960 \
+  --epochs 60
+```
+
+Optional overrides on both onboarding and detector training:
+
+- `--dataset-scope core_new|all`
+- `--core-size <N>`
+- `--patience <N>`
+- `--freeze <N>`
+- `--workers <N>`
 
 ## Dashboard Video Upload
 

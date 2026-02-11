@@ -18,6 +18,9 @@ class TrainConfig:
     imgsz: int = 960
     epochs: int = 60
     conf: float = 0.35
+    patience: int | None = None
+    freeze: int | None = None
+    workers: int | None = None
 
 
 def label_path_for_image(labels_dir: Path, image_path: Path) -> Path:
@@ -124,17 +127,27 @@ def train_yolo_model(
     model = YOLO(config.base_model)
     device = choose_training_device()
 
+    train_kwargs = {
+        "data": str(data_yaml),
+        "epochs": config.epochs,
+        "imgsz": config.imgsz,
+        "conf": config.conf,
+        "device": device,
+        "project": str(model_out_dir),
+        "name": "train",
+        "exist_ok": True,
+        "verbose": False,
+        "plots": False,
+    }
+    if config.patience is not None:
+        train_kwargs["patience"] = int(config.patience)
+    if config.freeze is not None:
+        train_kwargs["freeze"] = int(config.freeze)
+    if config.workers is not None:
+        train_kwargs["workers"] = int(config.workers)
+
     model.train(
-        data=str(data_yaml),
-        epochs=config.epochs,
-        imgsz=config.imgsz,
-        conf=config.conf,
-        device=device,
-        project=str(model_out_dir),
-        name="train",
-        exist_ok=True,
-        verbose=False,
-        plots=False,
+        **train_kwargs,
     )
 
     save_dir = Path(model.trainer.save_dir)
@@ -150,6 +163,9 @@ def train_yolo_model(
         "base_model": config.base_model,
         "imgsz": config.imgsz,
         "epochs": config.epochs,
+        "patience": config.patience,
+        "freeze": config.freeze,
+        "workers": config.workers,
         "device": device,
         "ultralytics_save_dir": str(save_dir),
         "best_path": str(best_dst),
