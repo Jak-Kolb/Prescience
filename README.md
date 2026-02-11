@@ -7,6 +7,9 @@ Camera-based end-of-line counting without PLC changes.
 - SKU enrollment from short phone video (`show all sides`).
 - Frame extraction with balanced 1/6 timeline coverage.
 - Guided onboarding labeling (manual seeds + model-assisted approvals + negatives).
+  - Manual mode supports multiple boxes per image (draw several, Enter saves all).
+  - Model-assisted approval accepts all proposed boxes (or switch to manual correction).
+  - After appending new videos, labeling focuses on appended-frame candidates by default.
 - SKU-specific YOLO detector training with stable `best.pt` output path.
 - Optional embedding profile creation (`resnet18` default, pluggable interface).
 - Edge runtime agent: detect + track + zone crossing count + event emission.

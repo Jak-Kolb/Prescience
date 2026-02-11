@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from prescience.datasets.bootstrap_label import _select_processable_image_names, _write_positive_labels
 from prescience.datasets.manifest import (
     labeled_image_names,
     load_or_create_manifest,
@@ -90,3 +91,95 @@ def test_normalize_sku_name_rejects_invalid_value() -> None:
     except ValueError:
         return
     raise AssertionError("Expected ValueError for invalid SKU name")
+
+
+def test_select_processable_image_names_prefers_append_history(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "derived" / "frames" / "can1_test" / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    images = [frames_dir / "000001.jpg", frames_dir / "000002.jpg", frames_dir / "000003.jpg"]
+    for image in images:
+        image.write_bytes(b"x")
+
+    meta_path = frames_dir.parent / "meta.json"
+    meta_path.write_text(
+        (
+            '{"append_history": ['
+            '{"video_path":"v1","new_files":["000002.jpg"]},'
+            '{"video_path":"v2","new_files":["000003.jpg"]}'
+            "]}"
+        ),
+        encoding="utf-8",
+    )
+
+    processable = {"000001.jpg", "000002.jpg", "000003.jpg"}
+    selected = _select_processable_image_names(
+        images=images,
+        processable_names=processable,
+        frames_dir=frames_dir,
+        overwrite=False,
+    )
+    assert selected == {"000002.jpg", "000003.jpg"}
+
+
+def test_select_processable_image_names_overwrite_uses_all(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "derived" / "frames" / "can1_test" / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    images = [frames_dir / "000001.jpg", frames_dir / "000002.jpg"]
+    for image in images:
+        image.write_bytes(b"x")
+
+    (frames_dir.parent / "meta.json").write_text(
+        '{"append_history":[{"video_path":"v1","new_files":["000002.jpg"]}]}',
+        encoding="utf-8",
+    )
+
+    processable = {"000001.jpg", "000002.jpg"}
+    selected = _select_processable_image_names(
+        images=images,
+        processable_names=processable,
+        frames_dir=frames_dir,
+        overwrite=True,
+    )
+    assert selected == processable
+
+
+def test_select_processable_image_names_does_not_fallback_to_original_when_append_exists(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "derived" / "frames" / "can1_test" / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    images = [frames_dir / "000001.jpg", frames_dir / "000002.jpg"]
+    for image in images:
+        image.write_bytes(b"x")
+
+    (frames_dir.parent / "meta.json").write_text(
+        '{"append_history":[{"video_path":"v1","new_files":["000002.jpg"]}]}',
+        encoding="utf-8",
+    )
+
+    # 000002.jpg already labeled; only original 000001.jpg remains processable.
+    processable = {"000001.jpg"}
+    selected = _select_processable_image_names(
+        images=images,
+        processable_names=processable,
+        frames_dir=frames_dir,
+        overwrite=False,
+    )
+    assert selected == set()
+
+
+def test_write_positive_labels_writes_multiple_boxes(tmp_path: Path) -> None:
+    label_path = tmp_path / "labels" / "000001.txt"
+    _write_positive_labels(
+        label_path=label_path,
+        class_id=0,
+        yolo_boxes=[
+            (0.5, 0.5, 0.2, 0.2),
+            (0.3, 0.3, 0.1, 0.1),
+        ],
+    )
+    lines = label_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("0 ")
+    assert lines[1].startswith("0 ")

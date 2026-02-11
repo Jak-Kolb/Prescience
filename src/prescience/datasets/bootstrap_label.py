@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import tempfile
@@ -96,10 +97,10 @@ def _label_path_for_image(labels_dir: Path, image_path: Path) -> Path:
     return labels_dir / f"{image_path.stem}.txt"
 
 
-def _write_positive_label(label_path: Path, class_id: int, yolo_box: tuple[float, float, float, float]) -> None:
-    xc, yc, bw, bh = yolo_box
+def _write_positive_labels(label_path: Path, class_id: int, yolo_boxes: list[tuple[float, float, float, float]]) -> None:
     label_path.parent.mkdir(parents=True, exist_ok=True)
-    label_path.write_text(f"{class_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n", encoding="utf-8")
+    lines = [f"{class_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}" for (xc, yc, bw, bh) in yolo_boxes]
+    label_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_negative_label(label_path: Path) -> None:
@@ -111,15 +112,22 @@ class _ManualBoxDrawer:
     def __init__(self, window_name: str):
         self.window_name = window_name
         self.dragging = False
-        self.box_ready = False
         self.start = (0, 0)
         self.end = (0, 0)
+        self.boxes: list[tuple[int, int, int, int]] = []
         cv2.setMouseCallback(window_name, self._on_mouse)
+
+    @staticmethod
+    def _normalize_xyxy(x1: int, y1: int, x2: int, y2: int) -> tuple[int, int, int, int]:
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        return (x1, y1, x2, y2)
 
     def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param: object) -> None:
         if event == cv2.EVENT_LBUTTONDOWN:
             self.dragging = True
-            self.box_ready = False
             self.start = (x, y)
             self.end = (x, y)
         elif event == cv2.EVENT_MOUSEMOVE and self.dragging:
@@ -127,12 +135,21 @@ class _ManualBoxDrawer:
         elif event == cv2.EVENT_LBUTTONUP:
             self.dragging = False
             self.end = (x, y)
-            self.box_ready = True
+            x1, y1, x2, y2 = self._normalize_xyxy(self.start[0], self.start[1], self.end[0], self.end[1])
+            if (x2 - x1) >= 2 and (y2 - y1) >= 2:
+                self.boxes.append((x1, y1, x2, y2))
 
-    def current_box(self) -> tuple[int, int, int, int] | None:
-        if not self.box_ready:
+    def preview_box(self) -> tuple[int, int, int, int] | None:
+        if not self.dragging:
             return None
-        return (self.start[0], self.start[1], self.end[0], self.end[1])
+        return self._normalize_xyxy(self.start[0], self.start[1], self.end[0], self.end[1])
+
+    def undo_last(self) -> None:
+        if self.boxes:
+            self.boxes.pop()
+
+    def clear_all(self) -> None:
+        self.boxes.clear()
 
 
 def _label_one_image_manual(
@@ -147,7 +164,7 @@ def _label_one_image_manual(
         return "skipped"
 
     height, width = image.shape[:2]
-    window = "Manual Label (drag box, Enter=save, 0=negative, Esc=skip)"
+    window = "Manual Label (drag boxes, Enter=save, u=undo, c=clear, 0=negative, Esc=skip)"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     drawer = _ManualBoxDrawer(window)
 
@@ -155,30 +172,56 @@ def _label_one_image_manual(
         disp = image.copy()
         cv2.putText(
             disp,
-            "Draw box | Enter=save | 0=negative | Esc=skip",
+            "Draw multiple boxes | Enter=save | u=undo c=clear | 0=negative | Esc=skip",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.6,
+            (255, 255, 255),
+            2,
+        )
+        cv2.putText(
+            disp,
+            f"Boxes: {len(drawer.boxes)}",
+            (10, 58),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
             (255, 255, 255),
             2,
         )
 
-        if drawer.dragging or drawer.current_box() is not None:
-            x1, y1 = drawer.start
-            x2, y2 = drawer.end
+        for idx, (x1, y1, x2, y2) in enumerate(drawer.boxes, start=1):
+            cv2.rectangle(disp, (x1, y1), (x2, y2), (0, 220, 120), 2)
+            cv2.putText(
+                disp,
+                str(idx),
+                (x1, max(20, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 220, 120),
+                2,
+            )
+
+        preview = drawer.preview_box()
+        if preview is not None:
+            x1, y1, x2, y2 = preview
             cv2.rectangle(disp, (x1, y1), (x2, y2), (0, 200, 255), 2)
 
         cv2.imshow(window, disp)
         key = cv2.waitKey(20) & 0xFF
 
         if key == 13:
-            box = drawer.current_box()
-            if box is None:
+            if not drawer.boxes:
                 continue
-            yolo_box = _xyxy_to_yolo_norm(*box, width, height)
-            _write_positive_label(label_path, class_id, yolo_box)
+            yolo_boxes = [_xyxy_to_yolo_norm(*box, width, height) for box in drawer.boxes]
+            _write_positive_labels(label_path, class_id, yolo_boxes)
             cv2.destroyWindow(window)
             return "positive"
+
+        if key == ord("u"):
+            drawer.undo_last()
+
+        if key == ord("c"):
+            drawer.clear_all()
 
         if key == ord("0") and allow_negatives:
             _write_negative_label(label_path)
@@ -190,22 +233,25 @@ def _label_one_image_manual(
             return "skipped"
 
 
-def _choose_best_box_xyxy(
+def _collect_proposed_boxes_xyxy(
     boxes_xyxy: np.ndarray,
     confidences: np.ndarray,
     pick_largest: bool,
-) -> tuple[int, int, int, int] | None:
+) -> list[tuple[int, int, int, int]]:
     if boxes_xyxy.size == 0:
-        return None
+        return []
 
     if pick_largest:
         areas = (boxes_xyxy[:, 2] - boxes_xyxy[:, 0]) * (boxes_xyxy[:, 3] - boxes_xyxy[:, 1])
-        idx = int(np.argmax(areas))
+        order = np.argsort(areas)[::-1]
     else:
-        idx = int(np.argmax(confidences))
+        order = np.argsort(confidences)[::-1]
 
-    x1, y1, x2, y2 = boxes_xyxy[idx]
-    return (int(x1), int(y1), int(x2), int(y2))
+    out: list[tuple[int, int, int, int]] = []
+    for idx in order.tolist():
+        x1, y1, x2, y2 = boxes_xyxy[int(idx)]
+        out.append((int(x1), int(y1), int(x2), int(y2)))
+    return out
 
 
 def _approve_one_image_with_model(
@@ -228,11 +274,11 @@ def _approve_one_image_with_model(
     results = model.predict(source=image, conf=conf, imgsz=imgsz, verbose=False)
     result = results[0]
 
-    best: tuple[int, int, int, int] | None = None
+    proposals: list[tuple[int, int, int, int]] = []
     if result.boxes is not None and len(result.boxes) > 0:
         boxes_xyxy = result.boxes.xyxy.cpu().numpy()
         confs = result.boxes.conf.cpu().numpy()
-        best = _choose_best_box_xyxy(boxes_xyxy, confs, pick_largest=pick_largest)
+        proposals = _collect_proposed_boxes_xyxy(boxes_xyxy, confs, pick_largest=pick_largest)
 
     window = "Approve (y=accept, n=manual, x=negative, s=skip, q=quit)"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
@@ -240,10 +286,18 @@ def _approve_one_image_with_model(
     while True:
         disp = image.copy()
 
-        if best is not None:
-            x1, y1, x2, y2 = best
-            cv2.rectangle(disp, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(disp, "PROPOSED", (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        if proposals:
+            for idx, (x1, y1, x2, y2) in enumerate(proposals, start=1):
+                cv2.rectangle(disp, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    disp,
+                    f"P{idx}",
+                    (x1, max(20, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 0),
+                    2,
+                )
         else:
             cv2.putText(disp, "No proposal. Press n for manual.", (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
@@ -273,9 +327,9 @@ def _approve_one_image_with_model(
             cv2.destroyWindow(window)
             return "negative"
 
-        if key == ord("y") and best is not None:
-            yolo_box = _xyxy_to_yolo_norm(*best, width, height)
-            _write_positive_label(label_path, class_id, yolo_box)
+        if key == ord("y") and proposals:
+            yolo_boxes = [_xyxy_to_yolo_norm(*box, width, height) for box in proposals]
+            _write_positive_labels(label_path, class_id, yolo_boxes)
             cv2.destroyWindow(window)
             return "positive"
 
@@ -322,6 +376,49 @@ def _sync_manifest_from_existing_labels(manifest: LabelManifest, labels_dir: Pat
         upsert_record(manifest, image.name, status, str(label_path))
 
 
+def _append_history_new_files(frames_dir: Path) -> set[str]:
+    meta_path = frames_dir.parent / "meta.json"
+    if not meta_path.exists():
+        return set()
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+    history = raw.get("append_history")
+    if not isinstance(history, list):
+        return set()
+
+    out: set[str] = set()
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        files = item.get("new_files")
+        if not isinstance(files, list):
+            continue
+        for value in files:
+            if isinstance(value, str):
+                out.add(value)
+    return out
+
+
+def _select_processable_image_names(
+    images: list[Path],
+    processable_names: set[str],
+    frames_dir: Path,
+    overwrite: bool,
+) -> set[str]:
+    """Use appended-frame pool when append history exists; otherwise use all processable."""
+    if overwrite:
+        return processable_names
+
+    image_names = {image.name for image in images}
+    appended_names = _append_history_new_files(frames_dir)
+    if not appended_names:
+        return processable_names
+    return processable_names.intersection(image_names).intersection(appended_names)
+
+
 def run_onboarding_labeling(params: OnboardingParams) -> None:
     images = list_images(params.frames_dir)
     if not images:
@@ -340,11 +437,19 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
 
     sections = _split_into_sections(images, params.sections)
 
-    selectable = {
+    processable_names = {
         image.name
         for image in images
         if should_process(image.name, params.overwrite, set(manifest.records.keys()))
     }
+    selectable = _select_processable_image_names(
+        images=images,
+        processable_names=processable_names,
+        frames_dir=params.frames_dir,
+        overwrite=params.overwrite,
+    )
+    if selectable != processable_names:
+        print(f"Focusing onboarding candidates on appended unlabeled frames ({len(selectable)} images).")
 
     stage1_candidates: list[Path] = []
     for section in sections:
@@ -397,11 +502,17 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
 
                 proposer = YOLO(str(best_stage1))
 
-                selectable_stage2 = {
+                processable_stage2 = {
                     image.name
                     for image in images
                     if should_process(image.name, params.overwrite, set(manifest.records.keys()))
                 }
+                selectable_stage2 = _select_processable_image_names(
+                    images=images,
+                    processable_names=processable_stage2,
+                    frames_dir=params.frames_dir,
+                    overwrite=params.overwrite,
+                )
                 stage2_candidates: list[Path] = []
                 for section in sections:
                     stage2_candidates.extend(_pick_evenly(section, params.approve_per_section, selectable_stage2))
