@@ -1,10 +1,15 @@
 # profiles
 
-Defines and persists SKU identity information (“product profiles”).
+SKU identity profile schema and IO.
+
+## Artifacts
+
+Each SKU profile directory contains:
+
+- `profile.json`: metadata (sku id, threshold, backbone, embedding_dim, timestamps)
+- `embeddings.npy`: representative embedding matrix
 
 ## Responsibilities
-- `schema.py`: versioned profile structure
-- `io.py`    : load/save profiles to disk
 
-## Notes
-Keep formats versioned so older profiles remain readable as the project evolves.
+- `schema.py`: typed, versioned metadata schema.
+- `io.py`: save/load helpers for profile metadata and embeddings.

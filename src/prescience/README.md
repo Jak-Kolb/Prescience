@@ -1,15 +1,19 @@
 # prescience (core package)
 
-This folder is the reusable Python library (`import prescience`).
+Reusable Python package for the Prescience MVP.
 
-## Layout
+## Package Layout
 
-- `ingest/` : turn raw videos into clean frames/assets
-- `vision/` : detection, tracking, embeddings, matching
-- `pipeline/`: end-to-end workflows (enroll, count video/stream)
-- `profiles/`: SKU profile schema + load/save
-- `types.py` : shared dataclasses used across modules
+- `ingest/`: enrollment media ingestion and frame extraction.
+- `datasets/`: labeling manifests, dataset builders, detector training helpers.
+- `vision/`: detect, track, embed, and match interfaces.
+- `pipeline/`: end-to-end operational workflows.
+- `events/`: canonical COUNT/HEARTBEAT/ALERT schema and emitter.
+- `cloud/`: FastAPI backend, SQLite store, SSE stream, dashboard templates.
+- `profiles/`: SKU profile schema + profile persistence.
+- `config.py`: typed app configuration loader.
+- `cli.py`: Typer command-line interface.
 
-## Rule
+## Guideline
 
-Reusable logic goes in `src/prescience/`. Command-line entrypoints go in `scripts/`.
+Put reusable logic in `src/prescience/`; keep wrapper scripts in `scripts/`.

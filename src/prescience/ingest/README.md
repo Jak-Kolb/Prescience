@@ -1,10 +1,13 @@
 # ingest
 
-Ingest converts user inputs (videos/images) into structured artifacts.
+Enrollment ingest utilities.
 
 ## Responsibilities
-- Extract frames from an enrollment video (skip blurry/duplicates)
-- Save outputs in a consistent folder structure + metadata
 
-## Contract
-No model training logic here. Ingest should be deterministic given the same inputs + config.
+- Extract high-quality frames from enrollment videos.
+- Force temporal diversity by splitting candidate frames into 1/6 timeline bins.
+- Rank by sharpness, dedupe within each bin, and save metadata (`meta.json`).
+
+## Command
+
+`prescience enroll extract-frames --video ... --sku ... --target ...`

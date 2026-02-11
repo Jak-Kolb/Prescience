@@ -1,14 +1,12 @@
 # scripts
 
-Thin command-line entrypoints.
+Thin convenience wrappers and demo launchers.
 
-## Philosophy
-Scripts should do:
-1) parse CLI args
-2) call `prescience.pipeline.*`
-3) exit
+## Included
 
-## Examples
-- `count_webcam.py` -> `pipeline.count_stream`
-- `count_video.py`  -> `pipeline.count_video`
-- `enroll.py`       -> `pipeline.enroll`
+- `demo_mvp.sh`: starts cloud backend and edge agent for local MVP demo.
+- legacy helper scripts remain for quick experiments.
+
+Primary interface is now the Typer CLI:
+
+- `prescience ...`

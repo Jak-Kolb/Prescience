@@ -1,12 +1,14 @@
 # vision
 
-Per-frame perception: detect, track, embed, and match.
+Per-frame perception and product matching components.
 
-## Responsibilities
-- `detector.py`: frame -> detections
-- `tracker.py` : frame -> tracked detections (stable IDs)
-- `embeddings.py`: crop -> embedding vector
-- `matcher.py`: embedding -> SKU match / unknown
+## Modules
+
+- `detector.py`: YOLO detection wrapper.
+- `tracker.py`: YOLO + ByteTrack wrapper with stable IDs.
+- `embeddings.py`: pluggable embedder interface (`Embedder.encode`) and `resnet18` backend.
+- `matcher.py`: cosine matching against SKU profile embeddings with unknown thresholding.
 
 ## Contract
-Return project-level types (from `prescience/types.py`), not model-specific tensors.
+
+Vision modules return project-level types and numpy arrays, not framework-specific tensors.

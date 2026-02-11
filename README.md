@@ -1,81 +1,134 @@
-# Prescience
+# Prescience MVP
 
-Object detection, tracking, and counting system using YOLO and computer vision.
+Camera-based end-of-line counting without PLC changes.
 
-## Setup
+## What This MVP Includes
+
+- SKU enrollment from short phone video (`show all sides`).
+- Frame extraction with balanced 1/6 timeline coverage.
+- Guided bootstrap labeling (manual seeds + model-assisted approvals + negatives).
+- SKU-specific YOLO detector training with stable `best.pt` output path.
+- Optional embedding profile creation (`resnet18` default, pluggable interface).
+- Edge runtime agent: detect + track + zone crossing count + event emission.
+- Minimal cloud backend (FastAPI + SQLite) and live SSE dashboard.
+- Pairing support with dev-mode bypass.
+- Interactive zone calibration helper.
+
+## Quickstart
 
 ```bash
-# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Install package in development mode
 pip install -e .
 ```
 
-## Scripts
-
-### Webcam Utilities
-
-- **show_webcam.py** - Simple webcam viewer for testing camera functionality
-- **draw_line.py** - Interactive tool to draw counting lines on webcam feed
-
-### Tracking & Counting
-
-- **count_webcam.py** - Real-time object detection and counting from webcam
-- **count_video.py** - Process video files for object detection and counting
-- **fake_tracking.py** - Simulated object tracking for testing
-- **fake_tracking_with_count.py** - Simulated tracking with line-crossing counter demo
-
-### Enrollment
-
-- **enroll.py** - Capture and save profiles for object recognition
-
-## Core Modules
-
-### `prescience/ingest/`
-
-- **video_to_frames.py** - Video frame extraction utilities
-- **frame_filter.py** - Frame preprocessing and filtering
-
-### `prescience/pipeline/`
-
-- **count_stream.py** - Real-time counting pipeline
-- **count_video.py** - Video file processing pipeline
-- **zone_count.py** - Zone-based counting logic
-- **enroll.py** - Profile enrollment pipeline
-
-### `prescience/vision/`
-
-- **detector.py** - YOLO object detection wrapper
-- **embeddings.py** - Feature extraction for object recognition
-- **matcher.py** - Object matching and identification
-- **tracker.py** - Multi-object tracking
-
-### `prescience/profiles/`
-
-- **io.py** - Profile storage and retrieval
-- **schema.py** - Profile data structures
-
-## Configuration
-
-Config files in `configs/` directory control detection parameters, model paths, and counting zones.
-
-## Usage
+## CLI
 
 ```bash
-# View webcam
-python scripts/show_webcam.py
-
-# Count objects from webcam
-python scripts/count_webcam.py --source 0 --model yolov8n.pt --conf 0.35
-
-# Count objects in video
-python scripts/count_video.py --source path/to/video.mp4
-
-# Test tracking simulation
-python scripts/fake_tracking_with_count.py
+prescience --help
+prescience enroll --help
+prescience train --help
+prescience cloud --help
 ```
+
+Main commands:
+
+- `prescience enroll extract-frames`
+- `prescience enroll label`
+- `prescience train detector`
+- `prescience enroll build-profile`
+- `prescience run`
+- `prescience calibrate zone`
+- `prescience cloud serve`
+- `prescience demo run-local`
+
+## End-to-End Demo
+
+1. Extract frames from enrollment video:
+
+```bash
+prescience enroll extract-frames \
+  --video data/raw/videos/can1_test/enroll.MOV \
+  --sku can1_test \
+  --target 150
+```
+
+2. Run guided labeling workflow:
+
+```bash
+prescience enroll label --sku can1_test
+```
+
+3. Train detector:
+
+```bash
+prescience train detector --sku can1_test --version v1 --epochs 60
+```
+
+4. Build embedding profile:
+
+```bash
+prescience enroll build-profile --sku can1_test --max-embeddings 40
+```
+
+5. Calibrate zone config:
+
+```bash
+prescience calibrate zone --source 0 --out configs/line-1.yaml --line-id line-1
+```
+
+6. Start cloud backend:
+
+```bash
+prescience cloud serve --host 127.0.0.1 --port 8000
+```
+
+7. Run edge agent:
+
+```bash
+prescience run \
+  --source 0 \
+  --model data/models/yolo/can1_test_v1/best.pt \
+  --zone-config configs/line-1.yaml \
+  --line-id line-1 \
+  --device-id device-1 \
+  --event-endpoint http://127.0.0.1:8000/events
+```
+
+8. Open dashboard: `http://127.0.0.1:8000`
+
+## Event Contract
+
+Event types:
+
+- `COUNT`: includes `seq`, `timestamp`, `frame_ts`, `count_delta`, `counts_total_overall`, `counts_total_by_sku`.
+- `HEARTBEAT`: includes fps/uptime/quality metrics.
+- `ALERT`: includes warning/critical condition signals.
+
+Cloud uses sequence checks per `(device_id, run_id)` and inserts `seq_gap` alerts for missing sequence windows.
+
+## Cloud Notes
+
+- SSE endpoint: `GET /stream?line_id=...`
+- Ingest endpoint: `POST /events`
+- Pairing can be required or disabled via `configs/default.yaml`:
+  - `cloud.pairing.required: false` (dev mode)
+
+## Directory Layout
+
+- `src/prescience/ingest`: video-to-frames pipeline.
+- `src/prescience/datasets`: label manifests + YOLO dataset/train helpers.
+- `src/prescience/vision`: detector/tracker/embedder/matcher.
+- `src/prescience/pipeline`: enroll/train/run/calibration orchestration.
+- `src/prescience/events`: event schemas + emitter.
+- `src/prescience/cloud`: FastAPI app, SQLite store, SSE stream, dashboard templates.
+- `data/`: local artifacts (ignored in git except `.gitkeep` + `data/README.md`).
+
+## One-Command Local Demo Script
+
+```bash
+bash scripts/demo_mvp.sh
+```
+
+This script starts cloud backend and then runs the edge agent against configurable source/model defaults.

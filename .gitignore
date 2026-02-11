@@ -110,8 +110,6 @@ mlruns/
 # Data directories (generated artifacts)
 ############################################
 data/
-datasets/
-models/
 
 ############################################
 # Configs: keep these tracked
@@ -121,10 +119,7 @@ models/
 
 ############################################
 # Optional
-!data/**/manifest.json
-!data/**/meta.json
-!data/**/data.yaml
-# !data/**/README.md
+!data/README.md
 !data/.gitkeep
 
 ############################################
