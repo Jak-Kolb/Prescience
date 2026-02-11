@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -19,7 +19,7 @@ class LabelRecord(BaseModel):
     image_name: str
     status: LabelStatus
     label_file: str
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class LabelManifest(BaseModel):
@@ -28,10 +28,12 @@ class LabelManifest(BaseModel):
     sku: str
     frames_dir: str
     labels_dir: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     stage1_model: str | None = None
     stage2_model: str | None = None
+    model_version: str | None = None
+    final_model: str | None = None
     records: dict[str, LabelRecord] = Field(default_factory=dict)
 
 
@@ -61,7 +63,7 @@ def save_manifest(manifest_path: str | Path, manifest: LabelManifest) -> None:
     """Persist manifest to disk."""
     path = Path(manifest_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    manifest.updated_at = datetime.now(UTC)
+    manifest.updated_at = datetime.now(timezone.utc)
     with path.open("w", encoding="utf-8") as f:
         json.dump(manifest.model_dump(mode="json"), f, indent=2)
 

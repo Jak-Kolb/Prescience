@@ -51,15 +51,16 @@ def enroll_label(
     approve_per_bin: int = typer.Option(5, help="Approval labels per section"),
     overwrite: bool = typer.Option(False, help="Relabel already-labeled frames"),
     allow_negatives: bool = typer.Option(True, help="Allow negative labels (empty txt)"),
-    base_model: str = typer.Option("yolov8n.pt", help="Bootstrap base model"),
+    base_model: str = typer.Option("yolov8n.pt", help="Onboarding base model"),
     imgsz: int = typer.Option(960, help="Training image size"),
     epochs_stage1: int = typer.Option(30, help="Stage1 epochs"),
     epochs_stage2: int = typer.Option(60, help="Stage2 epochs"),
+    version: int | None = typer.Option(None, help="Optional final model version number"),
 ) -> None:
-    """Run guided bootstrap labeling with model-in-the-loop approvals."""
-    from prescience.pipeline.enroll import run_bootstrap_labeling_for_sku
+    """Run guided onboarding labeling with model-in-the-loop approvals."""
+    from prescience.pipeline.enroll import run_onboarding_labeling_for_sku
 
-    run_bootstrap_labeling_for_sku(
+    run_onboarding_labeling_for_sku(
         sku=sku,
         manual_per_section=seed_per_bin,
         approve_per_section=approve_per_bin,
@@ -69,6 +70,7 @@ def enroll_label(
         imgsz=imgsz,
         epochs_stage1=epochs_stage1,
         epochs_stage2=epochs_stage2,
+        version=version,
     )
 
 

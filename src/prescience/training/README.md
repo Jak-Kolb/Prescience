@@ -6,7 +6,7 @@ Training notes for Prescience detector workflows.
 
 Training is orchestrated through pipeline and dataset modules, not standalone scripts:
 
-- `prescience enroll label` performs bootstrap stage1/stage2 training.
+- `prescience enroll label` performs onboarding stage1/stage2 training.
 - `prescience train detector` builds a versioned dataset and trains a stable SKU model.
 
 Stable output path convention:

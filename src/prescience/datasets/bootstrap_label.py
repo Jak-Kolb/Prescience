@@ -1,9 +1,11 @@
-"""Bootstrap labeling workflow with model-assisted approvals."""
+"""Onboarding labeling workflow with model-assisted approvals."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
+import tempfile
 
 import cv2
 import numpy as np
@@ -26,7 +28,7 @@ from prescience.datasets.yolo import (
 
 
 @dataclass(frozen=True)
-class BootstrapParams:
+class OnboardingParams:
     sku: str
     frames_dir: Path
     labels_dir: Path
@@ -43,6 +45,25 @@ class BootstrapParams:
     pick_largest: bool = True
     overwrite: bool = False
     allow_negatives: bool = True
+    version: int | None = None
+
+
+VERSION_DIR_PATTERN_TEMPLATE = r"^{sku}_v(\d+)$"
+
+
+def _next_model_version(sku: str, models_root: Path) -> int:
+    """Pick next available integer version for SKU model directory naming."""
+    models_root.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(VERSION_DIR_PATTERN_TEMPLATE.format(sku=re.escape(sku)))
+    max_seen = 0
+    for child in models_root.iterdir():
+        if not child.is_dir():
+            continue
+        match = pattern.match(child.name)
+        if not match:
+            continue
+        max_seen = max(max_seen, int(match.group(1)))
+    return max_seen + 1
 
 
 def _xyxy_to_yolo_norm(
@@ -301,7 +322,7 @@ def _sync_manifest_from_existing_labels(manifest: LabelManifest, labels_dir: Pat
         upsert_record(manifest, image.name, status, str(label_path))
 
 
-def run_bootstrap_labeling(params: BootstrapParams) -> None:
+def run_onboarding_labeling(params: OnboardingParams) -> None:
     images = list_images(params.frames_dir)
     if not images:
         raise RuntimeError(f"No images found in {params.frames_dir}")
@@ -345,18 +366,106 @@ def run_bootstrap_labeling(params: BootstrapParams) -> None:
     if not labeled_stage1:
         raise RuntimeError("No labels available after stage1; aborting")
 
-    dataset_stage1 = Path(f"data/datasets/yolo/{params.sku}_bootstrap_stage1")
+    models_root = Path("data/models/yolo")
+    datasets_root = Path("data/datasets/yolo")
+    version_num = params.version if params.version is not None else _next_model_version(params.sku, models_root)
+    model_tag = f"{params.sku}_v{version_num}"
+
+    # Train a stage-1 onboarding seed model.
+    if params.retrain_after_approve:
+        with tempfile.TemporaryDirectory(prefix=f"{params.sku}_onboarding_stage1_", dir=str(datasets_root)) as tmp_ds:
+            stage1_dataset_dir = Path(tmp_ds)
+            data_yaml_stage1 = build_yolo_dataset(
+                labeled_images=labeled_stage1,
+                labels_dir=params.labels_dir,
+                out_dataset_dir=stage1_dataset_dir,
+                class_name="product",
+            )
+
+            with tempfile.TemporaryDirectory(prefix=f"{params.sku}_onboarding_stage1_", dir=str(models_root)) as tmp_model:
+                stage1_model_dir = Path(tmp_model)
+                best_stage1 = train_yolo_model(
+                    data_yaml=data_yaml_stage1,
+                    model_out_dir=stage1_model_dir,
+                    config=TrainConfig(
+                        base_model=params.base_model,
+                        imgsz=params.imgsz,
+                        epochs=params.epochs_stage1,
+                        conf=params.conf_propose,
+                    ),
+                )
+
+                proposer = YOLO(str(best_stage1))
+
+                selectable_stage2 = {
+                    image.name
+                    for image in images
+                    if should_process(image.name, params.overwrite, set(manifest.records.keys()))
+                }
+                stage2_candidates: list[Path] = []
+                for section in sections:
+                    stage2_candidates.extend(_pick_evenly(section, params.approve_per_section, selectable_stage2))
+
+                for image in stage2_candidates:
+                    label_path = _label_path_for_image(params.labels_dir, image)
+                    result = _approve_one_image_with_model(
+                        img_path=image,
+                        label_path=label_path,
+                        model=proposer,
+                        class_id=params.class_id,
+                        conf=params.conf_propose,
+                        imgsz=params.imgsz,
+                        pick_largest=params.pick_largest,
+                        allow_negatives=params.allow_negatives,
+                    )
+
+                    if result == "quit":
+                        break
+
+                    if result in {"positive", "negative", "skipped"}:
+                        upsert_record(manifest, image.name, result, str(label_path))
+                        save_manifest(manifest_path, manifest)
+
+                labeled_stage2 = collect_labeled_images(params.frames_dir, params.labels_dir)
+                final_dataset_dir = Path(f"data/datasets/yolo/{model_tag}")
+                data_yaml_stage2 = build_yolo_dataset(
+                    labeled_images=labeled_stage2,
+                    labels_dir=params.labels_dir,
+                    out_dataset_dir=final_dataset_dir,
+                    class_name="product",
+                )
+
+                final_model_dir = Path(f"data/models/yolo/{model_tag}")
+                best_stage2 = train_yolo_model(
+                    data_yaml=data_yaml_stage2,
+                    model_out_dir=final_model_dir,
+                    config=TrainConfig(
+                        base_model=str(best_stage1),
+                        imgsz=params.imgsz,
+                        epochs=params.epochs_stage2,
+                        conf=params.conf_propose,
+                    ),
+                )
+
+                manifest.stage1_model = None
+                manifest.stage2_model = str(best_stage2)
+                manifest.model_version = f"v{version_num}"
+                manifest.final_model = str(best_stage2)
+                save_manifest(manifest_path, manifest)
+                return
+
+    # If retraining is disabled, stage-1 model becomes the final versioned model.
+    final_dataset_dir = Path(f"data/datasets/yolo/{model_tag}")
     data_yaml_stage1 = build_yolo_dataset(
         labeled_images=labeled_stage1,
         labels_dir=params.labels_dir,
-        out_dataset_dir=dataset_stage1,
+        out_dataset_dir=final_dataset_dir,
         class_name="product",
     )
-
-    model_dir_stage1 = Path(f"data/models/yolo/{params.sku}_bootstrap_stage1")
+    final_model_dir = Path(f"data/models/yolo/{model_tag}")
     best_stage1 = train_yolo_model(
         data_yaml=data_yaml_stage1,
-        model_out_dir=model_dir_stage1,
+        model_out_dir=final_model_dir,
         config=TrainConfig(
             base_model=params.base_model,
             imgsz=params.imgsz,
@@ -364,60 +473,13 @@ def run_bootstrap_labeling(params: BootstrapParams) -> None:
             conf=params.conf_propose,
         ),
     )
-    manifest.stage1_model = str(best_stage1)
+    manifest.stage1_model = None
+    manifest.stage2_model = str(best_stage1)
+    manifest.model_version = f"v{version_num}"
+    manifest.final_model = str(best_stage1)
     save_manifest(manifest_path, manifest)
 
-    proposer = YOLO(str(best_stage1))
 
-    selectable_stage2 = {
-        image.name
-        for image in images
-        if should_process(image.name, params.overwrite, set(manifest.records.keys()))
-    }
-    stage2_candidates: list[Path] = []
-    for section in sections:
-        stage2_candidates.extend(_pick_evenly(section, params.approve_per_section, selectable_stage2))
-
-    for image in stage2_candidates:
-        label_path = _label_path_for_image(params.labels_dir, image)
-        result = _approve_one_image_with_model(
-            img_path=image,
-            label_path=label_path,
-            model=proposer,
-            class_id=params.class_id,
-            conf=params.conf_propose,
-            imgsz=params.imgsz,
-            pick_largest=params.pick_largest,
-            allow_negatives=params.allow_negatives,
-        )
-
-        if result == "quit":
-            break
-
-        if result in {"positive", "negative", "skipped"}:
-            upsert_record(manifest, image.name, result, str(label_path))
-            save_manifest(manifest_path, manifest)
-
-    if params.retrain_after_approve:
-        labeled_stage2 = collect_labeled_images(params.frames_dir, params.labels_dir)
-        dataset_stage2 = Path(f"data/datasets/yolo/{params.sku}_bootstrap_stage2")
-        data_yaml_stage2 = build_yolo_dataset(
-            labeled_images=labeled_stage2,
-            labels_dir=params.labels_dir,
-            out_dataset_dir=dataset_stage2,
-            class_name="product",
-        )
-
-        model_dir_stage2 = Path(f"data/models/yolo/{params.sku}_bootstrap_stage2")
-        best_stage2 = train_yolo_model(
-            data_yaml=data_yaml_stage2,
-            model_out_dir=model_dir_stage2,
-            config=TrainConfig(
-                base_model=str(best_stage1),
-                imgsz=params.imgsz,
-                epochs=params.epochs_stage2,
-                conf=params.conf_propose,
-            ),
-        )
-        manifest.stage2_model = str(best_stage2)
-        save_manifest(manifest_path, manifest)
+# Backward-compatible aliases while the onboarding naming propagates.
+BootstrapParams = OnboardingParams
+run_bootstrap_labeling = run_onboarding_labeling

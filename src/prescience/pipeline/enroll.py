@@ -12,7 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from prescience.datasets.bootstrap_label import BootstrapParams, run_bootstrap_labeling
+from prescience.datasets.bootstrap_label import OnboardingParams, run_onboarding_labeling
 from prescience.datasets.yolo import TrainConfig, build_yolo_dataset, collect_labeled_images, train_yolo_model
 from prescience.ingest.video_to_frames import ExtractParams, extract_frames
 from prescience.profiles.io import save_profile
@@ -142,7 +142,7 @@ def extract_frames_for_sku(
     return merged_meta
 
 
-def run_bootstrap_labeling_for_sku(
+def run_onboarding_labeling_for_sku(
     sku: str,
     manual_per_section: int = 2,
     approve_per_section: int = 5,
@@ -152,10 +152,11 @@ def run_bootstrap_labeling_for_sku(
     imgsz: int = 960,
     epochs_stage1: int = 30,
     epochs_stage2: int = 60,
+    version: int | None = None,
 ) -> None:
-    """Launch two-stage bootstrap labeling workflow for SKU."""
-    run_bootstrap_labeling(
-        BootstrapParams(
+    """Launch two-stage onboarding labeling workflow for SKU."""
+    run_onboarding_labeling(
+        OnboardingParams(
             sku=sku,
             frames_dir=Path(f"data/derived/frames/{sku}/frames"),
             labels_dir=Path(f"data/derived/labels/{sku}/labels"),
@@ -167,8 +168,13 @@ def run_bootstrap_labeling_for_sku(
             imgsz=imgsz,
             epochs_stage1=epochs_stage1,
             epochs_stage2=epochs_stage2,
+            version=version,
         )
     )
+
+
+# Backward-compatible alias for older imports.
+run_bootstrap_labeling_for_sku = run_onboarding_labeling_for_sku
 
 
 def train_detector_for_sku(

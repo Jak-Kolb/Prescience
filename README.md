@@ -6,7 +6,7 @@ Camera-based end-of-line counting without PLC changes.
 
 - SKU enrollment from short phone video (`show all sides`).
 - Frame extraction with balanced 1/6 timeline coverage.
-- Guided bootstrap labeling (manual seeds + model-assisted approvals + negatives).
+- Guided onboarding labeling (manual seeds + model-assisted approvals + negatives).
 - SKU-specific YOLO detector training with stable `best.pt` output path.
 - Optional embedding profile creation (`resnet18` default, pluggable interface).
 - Edge runtime agent: detect + track + zone crossing count + event emission.
