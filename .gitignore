@@ -117,6 +117,10 @@ data/
 !configs/*.yaml
 !configs/*.yml
 
+# Local per-line calibration configs (machine/environment specific)
+configs/line-*.yaml
+configs/line-*.yml
+
 ############################################
 # Optional
 !data/README.md
