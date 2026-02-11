@@ -18,6 +18,7 @@ def main() -> None:
     p.add_argument("--patience", type=int, default=None)
     p.add_argument("--freeze", type=int, default=None)
     p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--resume", action="store_true", help="Resume from last.pt when signature matches")
     p.add_argument("--no-retrain", action="store_true", help="Skip stage2 retraining")
 
     args = p.parse_args()
@@ -37,6 +38,7 @@ def main() -> None:
         patience=args.patience,
         freeze=args.freeze,
         workers=args.workers,
+        resume=args.resume,
         retrain_after_approve=not args.no_retrain,
     )
 

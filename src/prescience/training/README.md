@@ -9,6 +9,8 @@ Training is orchestrated through pipeline and dataset modules, not standalone sc
 - `prescience enroll label` performs onboarding stage1/stage2 training.
 - `prescience train detector` builds a versioned dataset and trains a stable SKU model.
 - Default mode is `quick` with `base_model=auto` for fast incremental fine-tuning.
+- Onboarding defaults to `manual_per_section=4` (24 seed frames across 6 bins).
+- First-time SKU onboarding in quick mode uses boosted epoch minimums for stage1/stage2.
 
 ## Modes
 
@@ -26,7 +28,18 @@ Fields include:
 - `trained_snapshot_images`
 - `last_trained_model`
 - `last_mode`
+- `last_version_tag`
+- `dataset_hash`
+- `last_imgsz`
+- `last_base_model_path`
+- `last_ultralytics_version`
 - `updated_at`
+
+Resume behavior:
+
+- `--resume` attempts to continue from latest `last.pt` for the same SKU/version.
+- Resume is only allowed when `train_state.json` signature matches current request
+  (`dataset_hash`, mode, imgsz, base model path, ultralytics version, version tag).
 
 Stable output path convention:
 

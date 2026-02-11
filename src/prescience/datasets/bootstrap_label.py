@@ -23,17 +23,20 @@ from prescience.datasets.yolo import (
     TrainConfig,
     build_yolo_dataset,
     collect_labeled_images,
+    get_ultralytics_version,
     list_images,
     train_yolo_model,
 )
 from prescience.training.state import (
     apply_training_state_update,
+    can_resume_from_state,
+    compute_dataset_hash,
     load_or_create_train_state,
     save_train_state,
     select_training_names,
     train_state_path_for_labels,
 )
-from prescience.training.strategy import resolve_onboarding_training_config
+from prescience.training.strategy import dynamic_quick_epochs, resolve_onboarding_training_config
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,7 @@ class OnboardingParams:
     frames_dir: Path
     labels_dir: Path
     sections: int = 6
-    manual_per_section: int = 2
+    manual_per_section: int = 4
     approve_per_section: int = 5
     class_id: int = 0
     base_model: str = "auto"
@@ -57,6 +60,7 @@ class OnboardingParams:
     patience: int | None = None
     freeze: int | None = None
     workers: int | None = None
+    resume: bool = False
     pick_largest: bool = True
     overwrite: bool = False
     allow_negatives: bool = True
@@ -79,6 +83,19 @@ def _next_model_version(sku: str, models_root: Path) -> int:
             continue
         max_seen = max(max_seen, int(match.group(1)))
     return max_seen + 1
+
+
+def _has_model_versions(sku: str, models_root: Path) -> bool:
+    """Return True when SKU already has at least one trained version."""
+    if not models_root.exists():
+        return False
+    pattern = re.compile(VERSION_DIR_PATTERN_TEMPLATE.format(sku=re.escape(sku)))
+    for child in models_root.iterdir():
+        if not child.is_dir():
+            continue
+        if pattern.match(child.name) and (child / "best.pt").exists():
+            return True
+    return False
 
 
 def _xyxy_to_yolo_norm(
@@ -508,6 +525,7 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
 
     train_state_path = train_state_path_for_labels(labels_dir=params.labels_dir)
     train_state = load_or_create_train_state(train_state_path)
+    ultralytics_version = get_ultralytics_version()
     selection_stage1 = select_training_names(
         labeled_names=[path.name for path in labeled_stage1_all],
         scope=resolved.dataset_scope,
@@ -521,16 +539,31 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
             f"No selected stage1 training images for SKU {params.sku} "
             f"(mode={resolved.mode}, scope={resolved.dataset_scope})."
         )
+    models_root = Path("data/models/yolo")
+    datasets_root = Path("data/datasets/yolo")
+    is_first_enrollment = not _has_model_versions(params.sku, models_root)
+    version_num = params.version if params.version is not None else _next_model_version(params.sku, models_root)
+    model_tag = f"{params.sku}_v{version_num}"
+
+    new_count_stage1 = len(selection_stage1.new_names)
+    effective_epochs_stage1 = resolved.epochs_stage1
+    if resolved.mode == "quick" and params.epochs_stage1 is None:
+        effective_epochs_stage1 = max(6, dynamic_quick_epochs(new_count_stage1) - 2)
+        if is_first_enrollment:
+            effective_epochs_stage1 = max(effective_epochs_stage1, 12)
+    effective_freeze_stage1 = resolved.freeze
+    if resolved.mode == "quick" and params.freeze is None and new_count_stage1 >= 12:
+        effective_freeze_stage1 = 0
+    dataset_hash_stage1 = compute_dataset_hash(selected_images=labeled_stage1, labels_dir=params.labels_dir)
     print(
         "[onboarding stage1] "
         f"selected={len(labeled_stage1)}/{len(labeled_stage1_all)} "
-        f"core={len(selection_stage1.core_names)} new={len(selection_stage1.new_names)}"
+        f"core={len(selection_stage1.core_names)} new={new_count_stage1} "
+        f"epochs={effective_epochs_stage1} freeze={effective_freeze_stage1}"
     )
 
-    models_root = Path("data/models/yolo")
-    datasets_root = Path("data/datasets/yolo")
-    version_num = params.version if params.version is not None else _next_model_version(params.sku, models_root)
-    model_tag = f"{params.sku}_v{version_num}"
+    if is_first_enrollment:
+        print("[onboarding] first SKU enrollment detected; using boosted quick epoch minimums.")
 
     # Train a stage-1 onboarding seed model.
     if params.retrain_after_approve:
@@ -551,10 +584,10 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                     config=TrainConfig(
                         base_model=base_model,
                         imgsz=resolved.imgsz,
-                        epochs=resolved.epochs_stage1,
+                        epochs=effective_epochs_stage1,
                         conf=params.conf_propose,
                         patience=resolved.patience,
-                        freeze=resolved.freeze,
+                        freeze=effective_freeze_stage1,
                         workers=resolved.workers,
                     ),
                 )
@@ -610,10 +643,21 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                         f"No selected stage2 training images for SKU {params.sku} "
                         f"(mode={resolved.mode}, scope={resolved.dataset_scope})."
                     )
+                new_count_stage2 = len(selection_stage2.new_names)
+                effective_epochs_stage2 = resolved.epochs_stage2
+                if resolved.mode == "quick" and params.epochs_stage2 is None:
+                    effective_epochs_stage2 = dynamic_quick_epochs(new_count_stage2)
+                    if is_first_enrollment:
+                        effective_epochs_stage2 = max(effective_epochs_stage2, 20)
+                effective_freeze_stage2 = resolved.freeze
+                if resolved.mode == "quick" and params.freeze is None and new_count_stage2 >= 12:
+                    effective_freeze_stage2 = 0
+                dataset_hash_stage2 = compute_dataset_hash(selected_images=labeled_stage2, labels_dir=params.labels_dir)
                 print(
                     "[onboarding stage2] "
                     f"selected={len(labeled_stage2)}/{len(labeled_stage2_all)} "
-                    f"core={len(selection_stage2.core_names)} new={len(selection_stage2.new_names)}"
+                    f"core={len(selection_stage2.core_names)} new={new_count_stage2} "
+                    f"epochs={effective_epochs_stage2} freeze={effective_freeze_stage2}"
                 )
 
                 final_dataset_dir = Path(f"data/datasets/yolo/{model_tag}")
@@ -625,17 +669,37 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                 )
 
                 final_model_dir = Path(f"data/models/yolo/{model_tag}")
+                resume_checkpoint = final_model_dir / "train" / "weights" / "last.pt"
+                should_resume = False
+                if params.resume:
+                    decision = can_resume_from_state(
+                        train_state=train_state,
+                        requested_dataset_hash=dataset_hash_stage2,
+                        requested_mode=resolved.mode,
+                        requested_imgsz=resolved.imgsz,
+                        requested_base_model_path=base_model,
+                        requested_ultralytics_version=ultralytics_version,
+                        requested_version_tag=f"v{version_num}",
+                    )
+                    if decision.allowed and resume_checkpoint.exists():
+                        should_resume = True
+                        print(f"[onboarding stage2] resume enabled from {resume_checkpoint}")
+                    else:
+                        reason = decision.reason if not decision.allowed else "missing_resume_checkpoint"
+                        print(f"[onboarding stage2] resume skipped ({reason}); starting fresh.")
                 best_stage2 = train_yolo_model(
                     data_yaml=data_yaml_stage2,
                     model_out_dir=final_model_dir,
                     config=TrainConfig(
                         base_model=str(best_stage1),
                         imgsz=resolved.imgsz,
-                        epochs=resolved.epochs_stage2,
+                        epochs=effective_epochs_stage2,
                         conf=params.conf_propose,
                         patience=resolved.patience,
-                        freeze=resolved.freeze,
+                        freeze=effective_freeze_stage2,
                         workers=resolved.workers,
+                        resume=should_resume,
+                        resume_checkpoint=str(resume_checkpoint) if should_resume else None,
                     ),
                 )
 
@@ -649,6 +713,11 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                     selection=selection_stage2,
                     trained_model_path=str(best_stage2),
                     mode=resolved.mode,
+                    version_tag=f"v{version_num}",
+                    dataset_hash=dataset_hash_stage2,
+                    imgsz=resolved.imgsz,
+                    base_model_path=base_model,
+                    ultralytics_version=ultralytics_version,
                 )
                 save_train_state(train_state_path, updated_state)
                 return
@@ -662,17 +731,37 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
         class_name="product",
     )
     final_model_dir = Path(f"data/models/yolo/{model_tag}")
+    resume_checkpoint = final_model_dir / "train" / "weights" / "last.pt"
+    should_resume = False
+    if params.resume:
+        decision = can_resume_from_state(
+            train_state=train_state,
+            requested_dataset_hash=dataset_hash_stage1,
+            requested_mode=resolved.mode,
+            requested_imgsz=resolved.imgsz,
+            requested_base_model_path=base_model,
+            requested_ultralytics_version=ultralytics_version,
+            requested_version_tag=f"v{version_num}",
+        )
+        if decision.allowed and resume_checkpoint.exists():
+            should_resume = True
+            print(f"[onboarding stage1] resume enabled from {resume_checkpoint}")
+        else:
+            reason = decision.reason if not decision.allowed else "missing_resume_checkpoint"
+            print(f"[onboarding stage1] resume skipped ({reason}); starting fresh.")
     best_stage1 = train_yolo_model(
         data_yaml=data_yaml_stage1,
         model_out_dir=final_model_dir,
         config=TrainConfig(
             base_model=base_model,
             imgsz=resolved.imgsz,
-            epochs=resolved.epochs_stage1,
+            epochs=effective_epochs_stage1,
             conf=params.conf_propose,
             patience=resolved.patience,
-            freeze=resolved.freeze,
+            freeze=effective_freeze_stage1,
             workers=resolved.workers,
+            resume=should_resume,
+            resume_checkpoint=str(resume_checkpoint) if should_resume else None,
         ),
     )
     manifest.stage1_model = None
@@ -685,6 +774,11 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
         selection=selection_stage1,
         trained_model_path=str(best_stage1),
         mode=resolved.mode,
+        version_tag=f"v{version_num}",
+        dataset_hash=dataset_hash_stage1,
+        imgsz=resolved.imgsz,
+        base_model_path=base_model,
+        ultralytics_version=ultralytics_version,
     )
     save_train_state(train_state_path, updated_state)
 

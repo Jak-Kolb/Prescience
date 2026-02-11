@@ -13,20 +13,28 @@ import cv2
 import numpy as np
 
 from prescience.datasets.bootstrap_label import OnboardingParams, run_onboarding_labeling
-from prescience.datasets.yolo import TrainConfig, build_yolo_dataset, collect_labeled_images, train_yolo_model
+from prescience.datasets.yolo import (
+    TrainConfig,
+    build_yolo_dataset,
+    collect_labeled_images,
+    get_ultralytics_version,
+    train_yolo_model,
+)
 from prescience.ingest.video_to_frames import ExtractParams, extract_frames
 from prescience.profiles.io import save_profile
 from prescience.profiles.schema import ProfileMetadata, ProfileModelInfo, SKUProfile
 from prescience.training.state import (
     apply_training_state_update,
+    can_resume_from_state,
+    compute_dataset_hash,
     load_or_create_train_state,
     save_train_state,
     select_training_names,
     train_state_path_for_labels,
 )
 from prescience.training.strategy import (
+    dynamic_quick_epochs,
     resolve_detector_training_config,
-    resolve_onboarding_training_config,
 )
 from prescience.vision.embeddings import build_embedder
 
@@ -206,7 +214,7 @@ def extract_frames_for_sku(
 
 def run_onboarding_labeling_for_sku(
     sku: str,
-    manual_per_section: int = 2,
+    manual_per_section: int = 4,
     approve_per_section: int = 5,
     overwrite: bool = False,
     allow_negatives: bool = True,
@@ -220,20 +228,10 @@ def run_onboarding_labeling_for_sku(
     patience: int | None = None,
     freeze: int | None = None,
     workers: int | None = None,
+    resume: bool = False,
     version: int | None = None,
 ) -> None:
     """Launch two-stage onboarding labeling workflow for SKU."""
-    resolved = resolve_onboarding_training_config(
-        mode=mode,
-        dataset_scope=dataset_scope,
-        core_size=core_size,
-        imgsz=imgsz,
-        epochs_stage1=epochs_stage1,
-        epochs_stage2=epochs_stage2,
-        patience=patience,
-        freeze=freeze,
-        workers=workers,
-    )
     resolved_base_model = resolve_base_model_for_sku(
         sku=sku,
         base_model=base_model,
@@ -241,16 +239,17 @@ def run_onboarding_labeling_for_sku(
     )
     print(
         "[onboarding] "
-        f"mode={resolved.mode} "
-        f"scope={resolved.dataset_scope} "
+        f"mode={mode} "
+        f"scope={dataset_scope or 'preset'} "
         f"base_model={resolved_base_model} "
-        f"imgsz={resolved.imgsz} "
-        f"epochs_stage1={resolved.epochs_stage1} "
-        f"epochs_stage2={resolved.epochs_stage2} "
-        f"patience={resolved.patience} "
-        f"freeze={resolved.freeze} "
-        f"workers={resolved.workers} "
-        f"core_size={resolved.core_size}"
+        f"imgsz={imgsz or 'preset'} "
+        f"epochs_stage1={epochs_stage1 or 'preset'} "
+        f"epochs_stage2={epochs_stage2 or 'preset'} "
+        f"patience={patience or 'preset'} "
+        f"freeze={freeze if freeze is not None else 'preset'} "
+        f"workers={workers if workers is not None else 'preset'} "
+        f"core_size={core_size or 'preset'} "
+        f"resume={resume}"
     )
 
     run_onboarding_labeling(
@@ -263,15 +262,16 @@ def run_onboarding_labeling_for_sku(
             overwrite=overwrite,
             allow_negatives=allow_negatives,
             base_model=resolved_base_model,
-            mode=resolved.mode,
-            dataset_scope=resolved.dataset_scope,
-            core_size=resolved.core_size,
-            imgsz=resolved.imgsz,
-            epochs_stage1=resolved.epochs_stage1,
-            epochs_stage2=resolved.epochs_stage2,
-            patience=resolved.patience,
-            freeze=resolved.freeze,
-            workers=resolved.workers,
+            mode=mode,
+            dataset_scope=dataset_scope,
+            core_size=core_size,
+            imgsz=imgsz,
+            epochs_stage1=epochs_stage1,
+            epochs_stage2=epochs_stage2,
+            patience=patience,
+            freeze=freeze,
+            workers=workers,
+            resume=resume,
             version=version,
         )
     )
@@ -294,6 +294,7 @@ def train_detector_for_sku(
     workers: int | None = None,
     conf: float = 0.35,
     base_model: str = "auto",
+    resume: bool = False,
 ) -> Path:
     """Train detector from current labeled frames with mode-aware dataset scope."""
     frames_dir = Path(f"data/derived/frames/{sku}/frames")
@@ -333,11 +334,23 @@ def train_detector_for_sku(
         raise RuntimeError(
             f"No selected training images for SKU {sku} (mode={resolved.mode}, scope={resolved.dataset_scope})."
         )
+    new_count = len(selection.new_names)
+    effective_epochs = resolved.epochs
+    if mode == "quick" and epochs is None:
+        effective_epochs = dynamic_quick_epochs(new_count)
+
+    effective_freeze = resolved.freeze
+    if mode == "quick" and freeze is None and new_count >= 12:
+        effective_freeze = 0
+
+    dataset_hash = compute_dataset_hash(selected_images=selected, labels_dir=labels_dir)
+    ultralytics_version = get_ultralytics_version()
     print(
         "[train detector] "
         f"mode={resolved.mode} scope={resolved.dataset_scope} "
-        f"base_model={resolved_base_model} imgsz={resolved.imgsz} epochs={resolved.epochs} "
-        f"patience={resolved.patience} freeze={resolved.freeze} workers={resolved.workers} "
+        f"base_model={resolved_base_model} imgsz={resolved.imgsz} epochs={effective_epochs} "
+        f"patience={resolved.patience} freeze={effective_freeze} workers={resolved.workers} "
+        f"resume={resume} "
         f"selected={len(selected)}/{len(labeled)} core={len(selection.core_names)} new={len(selection.new_names)}"
     )
 
@@ -350,17 +363,38 @@ def train_detector_for_sku(
     )
 
     model_dir = Path(f"data/models/yolo/{sku}_{version}")
+    resume_checkpoint = model_dir / "train" / "weights" / "last.pt"
+    should_resume = False
+    if resume:
+        decision = can_resume_from_state(
+            train_state=train_state,
+            requested_dataset_hash=dataset_hash,
+            requested_mode=resolved.mode,
+            requested_imgsz=resolved.imgsz,
+            requested_base_model_path=resolved_base_model,
+            requested_ultralytics_version=ultralytics_version,
+            requested_version_tag=version,
+        )
+        if decision.allowed and resume_checkpoint.exists():
+            should_resume = True
+            print(f"[train detector] resume enabled from {resume_checkpoint}")
+        else:
+            reason = decision.reason if not decision.allowed else "missing_resume_checkpoint"
+            print(f"[train detector] resume skipped ({reason}); starting fresh.")
+
     best = train_yolo_model(
         data_yaml=data_yaml,
         model_out_dir=model_dir,
         config=TrainConfig(
             base_model=resolved_base_model,
             imgsz=resolved.imgsz,
-            epochs=resolved.epochs,
+            epochs=effective_epochs,
             conf=conf,
             patience=resolved.patience,
-            freeze=resolved.freeze,
+            freeze=effective_freeze,
             workers=resolved.workers,
+            resume=should_resume,
+            resume_checkpoint=str(resume_checkpoint) if should_resume else None,
         ),
     )
     updated_state = apply_training_state_update(
@@ -368,6 +402,11 @@ def train_detector_for_sku(
         selection=selection,
         trained_model_path=str(best),
         mode=resolved.mode,
+        version_tag=version,
+        dataset_hash=dataset_hash,
+        imgsz=resolved.imgsz,
+        base_model_path=resolved_base_model,
+        ultralytics_version=ultralytics_version,
     )
     save_train_state(train_state_path, updated_state)
     print(f"Trained model: {best}")
