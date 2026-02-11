@@ -46,3 +46,6 @@ Stable output path convention:
 - `data/models/yolo/{sku}_{version}/best.pt`
 
 Ultralytics internal run paths can vary; the pipeline always copies `best.pt` to this stable location.
+
+Dashboard-driven onboarding and retraining call the same training stack and can pass progress callbacks
+for epoch/status updates in UI job streams.

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tracking Console</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="topbar">
+        <h1>Tracking Console</h1>
+        <a class="button ghost" href="/">Back to Dashboard</a>
+      </header>
+
+      <section class="grid-2">
+        <article class="card">
+          <h2>Define Zone (Per Line)</h2>
+          <div class="stack-form">
+            <label>Source</label>
+            <input id="zone-source" type="text" value="0" />
+            <label>Line ID</label>
+            <input id="zone-line-id" type="text" value="{{ line_id }}" />
+            <label>Direction</label>
+            <select id="zone-direction">
+              <option value="left_to_right">left_to_right</option>
+              <option value="right_to_left">right_to_left</option>
+              <option value="top_to_bottom">top_to_bottom</option>
+              <option value="bottom_to_top">bottom_to_top</option>
+            </select>
+          </div>
+          <div class="inline-actions">
+            <button id="zone-load-frame">Load Frame</button>
+            <button id="zone-undo" class="ghost">Undo</button>
+            <button id="zone-clear" class="ghost">Clear</button>
+            <button id="zone-save">Save Zone</button>
+          </div>
+          <div class="canvas-wrap">
+            <canvas id="zone-canvas"></canvas>
+          </div>
+          <div id="zone-status" class="muted"></div>
+        </article>
+
+        <article class="card">
+          <h2>Run Tracking</h2>
+          <div class="stack-form">
+            <label>SKU</label>
+            <select id="tracking-sku">
+              {% for sku in skus %}
+                <option value="{{ sku.sku_id }}" {% if sku.sku_id == sku_id %}selected{% endif %}>{{ sku.sku_id }}</option>
+              {% endfor %}
+            </select>
+            <label>Source</label>
+            <input id="tracking-source" type="text" value="0" />
+            <label>Line ID</label>
+            <input id="tracking-line-id" type="text" value="{{ line_id }}" />
+            <label>Device ID</label>
+            <input id="tracking-device-id" type="text" value="device-1" />
+          </div>
+          <div class="inline-actions">
+            <button id="tracking-start">Start Tracking</button>
+            <button id="tracking-stop" class="ghost">Stop Tracking</button>
+          </div>
+          <div id="tracking-status" class="muted"></div>
+          <div class="stream-wrap">
+            <img id="tracking-stream" alt="Tracking stream" />
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      window.PRESCIENCE_TRACKING = {
+        skuId: {{ sku_id | tojson }},
+        lineId: {{ line_id | tojson }},
+      };
+    </script>
+    <script src="/static/tracking.js"></script>
+  </body>
+</html>

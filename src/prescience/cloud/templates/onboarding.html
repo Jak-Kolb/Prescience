@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onboarding {{ session.sku_id }}</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="topbar">
+        <h1>Onboarding <code>{{ session.sku_id }}</code></h1>
+        <a class="button ghost" href="/">Back to Dashboard</a>
+      </header>
+
+      <section class="stats-grid">
+        <article class="card metric">
+          <div class="label">State</div>
+          <div class="value small" id="session-state">{{ summary.state }}</div>
+        </article>
+        <article class="card metric">
+          <div class="label">Version</div>
+          <div class="value small">{{ summary.version_tag }}</div>
+        </article>
+        <article class="card metric">
+          <div class="label">Seed</div>
+          <div class="value small" id="seed-progress">{{ summary.seed.labeled }}/{{ summary.seed.total }}</div>
+        </article>
+        <article class="card metric">
+          <div class="label">Approval</div>
+          <div class="value small" id="approval-progress">{{ summary.approval.labeled }}/{{ summary.approval.total }}</div>
+        </article>
+      </section>
+
+      <section class="grid-2">
+        <article class="card">
+          <h2>Labeling Workspace</h2>
+          <p class="muted">
+            Drag to draw one or more boxes. Use negative/skip where needed.
+            Keyboard: <code>u</code> undo, <code>c</code> clear.
+          </p>
+          <div class="canvas-wrap">
+            <canvas id="label-canvas"></canvas>
+          </div>
+          <div class="inline-actions">
+            <button id="save-positive">Save Positive</button>
+            <button id="save-negative" class="ghost">Save Negative</button>
+            <button id="save-skipped" class="ghost">Skip</button>
+            <button id="undo-box" class="ghost">Undo</button>
+            <button id="clear-boxes" class="ghost">Clear</button>
+          </div>
+          <div class="inline-actions">
+            <button id="prev-frame" class="ghost">Prev</button>
+            <button id="next-frame" class="ghost">Next</button>
+          </div>
+          <div id="frame-label" class="muted"></div>
+        </article>
+
+        <article class="card">
+          <h2>Training Control</h2>
+          <div id="training-status" class="muted">Waiting for labels.</div>
+          <div class="progress">
+            <div id="training-progress-bar"></div>
+          </div>
+          <div class="inline-actions">
+            <button id="seed-complete">Start Stage1 Training</button>
+            <button id="approval-complete">Start Stage2 Training</button>
+          </div>
+          <div id="job-feed" class="job-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      window.PRESCIENCE_ONBOARDING = {
+        sessionId: {{ session.session_id | tojson }},
+        session: {{ session | tojson }},
+        summary: {{ summary | tojson }},
+      };
+    </script>
+    <script src="/static/onboarding.js"></script>
+  </body>
+</html>
