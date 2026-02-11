@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -517,6 +518,68 @@ class CloudStore:
             "inserted": inserted,
             "skipped_existing": skipped_existing,
             "invalid": invalid,
+        }
+
+    def delete_sku_and_artifacts(
+        self,
+        sku_id: str,
+        data_root: str | Path = "data",
+        runs_root: str | Path = "runs",
+    ) -> dict[str, Any]:
+        """Delete SKU metadata plus local artifacts for videos, labels, datasets, models, and profiles."""
+        data_root_path = Path(data_root)
+        runs_root_path = Path(runs_root)
+
+        deleted_paths: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        def remove_path(path: Path) -> None:
+            if not path.exists():
+                return
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                deleted_paths.append(str(path))
+            except OSError as exc:
+                errors.append({"path": str(path), "error": str(exc)})
+
+        direct_targets = [
+            data_root_path / "raw" / "videos" / sku_id,
+            data_root_path / "derived" / "frames" / sku_id,
+            data_root_path / "derived" / "labels" / sku_id,
+            data_root_path / "derived" / "crops" / sku_id,
+            data_root_path / "profiles" / sku_id,
+        ]
+        for target in direct_targets:
+            remove_path(target)
+
+        glob_targets = [
+            (data_root_path / "datasets" / "yolo", f"{sku_id}_*"),
+            (data_root_path / "models" / "yolo", f"{sku_id}_*"),
+            (runs_root_path / "detect" / "data" / "models" / "yolo", f"{sku_id}_*"),
+        ]
+        for base_dir, pattern in glob_targets:
+            if not base_dir.exists():
+                continue
+            for target in sorted(base_dir.glob(pattern)):
+                remove_path(target)
+
+        conn = self._conn()
+        try:
+            with conn:
+                deleted_db_row = conn.execute("DELETE FROM skus WHERE sku_id=?", (sku_id,)).rowcount > 0
+        finally:
+            conn.close()
+
+        return {
+            "sku_id": sku_id,
+            "deleted_db_row": deleted_db_row,
+            "deleted_count": len(deleted_paths),
+            "deleted_paths": deleted_paths,
+            "errors_count": len(errors),
+            "errors": errors,
         }
 
     def get_device_config(self, device_id: str) -> dict[str, Any]:

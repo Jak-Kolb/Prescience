@@ -173,17 +173,28 @@
           {% if skus %}
             <div class="row" style="margin-top:6px;">
               {% for sku in skus %}
-                <form
-                  hx-post="/ui/sku/upload-video"
-                  hx-target="#action-result"
-                  hx-swap="innerHTML"
-                  hx-encoding="multipart/form-data"
-                >
-                  <input type="hidden" name="sku" value="{{ sku.sku_id }}" />
-                  <span><code>{{ sku.sku_id }}</code></span>
-                  <input type="file" name="video" accept="video/*" required />
-                  <button type="submit">Add Video</button>
-                </form>
+                <div class="row" style="align-items:center;">
+                  <form
+                    hx-post="/ui/sku/upload-video"
+                    hx-target="#action-result"
+                    hx-swap="innerHTML"
+                    hx-encoding="multipart/form-data"
+                  >
+                    <input type="hidden" name="sku" value="{{ sku.sku_id }}" />
+                    <span><code>{{ sku.sku_id }}</code></span>
+                    <input type="file" name="video" accept="video/*" required />
+                    <button type="submit">Add Video</button>
+                  </form>
+                  <form
+                    hx-post="/ui/skus/delete"
+                    hx-target="#action-result"
+                    hx-swap="innerHTML"
+                    hx-confirm="Delete SKU '{{ sku.sku_id }}' and all related videos/models/data?"
+                  >
+                    <input type="hidden" name="sku_id" value="{{ sku.sku_id }}" />
+                    <button type="submit" style="background:#b42318;">Delete SKU</button>
+                  </form>
+                </div>
               {% endfor %}
             </div>
           {% else %}

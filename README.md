@@ -114,6 +114,8 @@ From the dashboard, use **SKU Enrollment Videos** to upload local videos:
 - Enter a new SKU name + choose/drag a video: file is saved as `data/raw/videos/<sku>/<sku>_0.MOV`.
 - Upload another video for same SKU: auto-saved as `data/raw/videos/<sku>/<sku>_1.MOV`, then `_2`, etc.
 - Existing SKUs are shown with quick “Add Video” upload forms.
+- Existing SKUs also have a **Delete SKU** action that removes SKU metadata and local artifacts:
+  videos, derived frames/labels/crops, profile files, and SKU-specific datasets/models.
 
 ## Event Contract
 

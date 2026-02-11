@@ -149,3 +149,66 @@ def test_sync_skus_from_profiles_registers_missing_profile(tmp_path: Path) -> No
     assert skus[0]["name"] == "Can 1 Test"
     assert skus[0]["profile_path"] == str(profile_dir)
     assert skus[0]["threshold"] == 0.72
+
+
+def test_delete_sku_and_artifacts_removes_only_target_sku(tmp_path: Path) -> None:
+    store = CloudStore(db_path=tmp_path / "cloud.db", heartbeat_timeout_seconds=90, pairing_required=False)
+    store.upsert_sku(
+        sku_id="can1_test",
+        name="Can 1",
+        profile_path="data/profiles/can1_test",
+        threshold=0.72,
+        metadata={},
+    )
+    store.upsert_sku(
+        sku_id="can2_test",
+        name="Can 2",
+        profile_path="data/profiles/can2_test",
+        threshold=0.72,
+        metadata={},
+    )
+
+    data_root = tmp_path / "data"
+    runs_root = tmp_path / "runs"
+
+    targets = [
+        data_root / "raw" / "videos" / "can1_test" / "can1_test_0.MOV",
+        data_root / "derived" / "frames" / "can1_test" / "frames" / "000001.jpg",
+        data_root / "derived" / "labels" / "can1_test" / "labels" / "000001.txt",
+        data_root / "derived" / "crops" / "can1_test" / "000001.jpg",
+        data_root / "profiles" / "can1_test" / "profile.json",
+        data_root / "models" / "yolo" / "can1_test_v1" / "best.pt",
+        data_root / "datasets" / "yolo" / "can1_test_v1" / "data.yaml",
+        runs_root / "detect" / "data" / "models" / "yolo" / "can1_test_v1" / "train" / "args.yaml",
+    ]
+    for path in targets:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+
+    preserved = [
+        data_root / "models" / "yolo" / "can2_test_v1" / "best.pt",
+        data_root / "datasets" / "yolo" / "can2_test_v1" / "data.yaml",
+        data_root / "profiles" / "can2_test" / "profile.json",
+        runs_root / "detect" / "data" / "models" / "yolo" / "can2_test_v1" / "train" / "args.yaml",
+    ]
+    for path in preserved:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep", encoding="utf-8")
+
+    result = store.delete_sku_and_artifacts(
+        sku_id="can1_test",
+        data_root=data_root,
+        runs_root=runs_root,
+    )
+
+    assert result["deleted_db_row"] is True
+    assert result["errors_count"] == 0
+    assert result["deleted_count"] > 0
+    for path in targets:
+        assert not path.exists()
+    for path in preserved:
+        assert path.exists()
+
+    remaining_skus = {row["sku_id"] for row in store.list_skus()}
+    assert "can1_test" not in remaining_skus
+    assert "can2_test" in remaining_skus

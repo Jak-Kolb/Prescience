@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,15 @@ def update_sku(sku_id: str, payload: SKUUpsertRequest, request: Request) -> dict
     )
 
 
+@router.delete("/skus/{sku_id}")
+def delete_sku(sku_id: str, request: Request) -> dict[str, Any]:
+    try:
+        normalized = normalize_sku_name(sku_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _store(request).delete_sku_and_artifacts(sku_id=normalized)
+
+
 @router.get("/devices/{device_id}/config")
 def get_device_config(device_id: str, request: Request) -> dict[str, Any]:
     out = _store(request).get_device_config(device_id)
@@ -251,5 +261,39 @@ async def ui_upload_sku_video(
         "<div class='ok'>"
         f"Uploaded video for <code>{normalized_sku}</code> to "
         f"<code>{target_path}</code>"
+        "</div>"
+    )
+
+
+@router.post("/ui/skus/delete", response_class=HTMLResponse)
+def ui_delete_sku(
+    request: Request,
+    sku_id: str = Form(...),
+) -> str:
+    """Delete SKU metadata and associated local artifacts."""
+    try:
+        normalized_sku = normalize_sku_name(sku_id)
+    except ValueError as exc:
+        return f"<div class='warn'>{escape(str(exc))}</div>"
+
+    result = _store(request).delete_sku_and_artifacts(sku_id=normalized_sku)
+    if result["errors_count"] > 0:
+        first = result["errors"][0]
+        return (
+            "<div class='warn'>"
+            f"Deleted <code>{normalized_sku}</code> partially "
+            f"({result['deleted_count']} paths), but hit errors. "
+            f"First error: <code>{escape(first['path'])}</code> "
+            f"({escape(first['error'])})"
+            "</div>"
+        )
+
+    if not result["deleted_db_row"] and result["deleted_count"] == 0:
+        return f"<div class='warn'>SKU <code>{normalized_sku}</code> was not found.</div>"
+
+    return (
+        "<div class='ok'>"
+        f"Deleted SKU <code>{normalized_sku}</code> "
+        f"and removed {result['deleted_count']} local artifact paths."
         "</div>"
     )
