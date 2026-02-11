@@ -1,0 +1,52 @@
+camera:
+  source: 0
+
+line:
+  line_id: line-1
+
+zone:
+  polygon:
+    - [120, 120]
+    - [520, 120]
+    - [520, 420]
+    - [120, 420]
+  direction: left_to_right
+
+counting:
+  min_separation_seconds: 0.4
+  track_cooldown_seconds: 1.0
+  max_track_idle_frames: 30
+
+tracker:
+  conf: 0.35
+  classes: []
+  tracker_cfg: bytetrack.yaml
+
+quality:
+  min_brightness: 30.0
+  min_blur: 10.0
+  alert_cooldown_seconds: 20.0
+
+events:
+  endpoint: http://127.0.0.1:8000/events
+  local_jsonl_path: data/runs/events.jsonl
+  heartbeat_interval_seconds: 5.0
+  request_timeout_seconds: 2.0
+
+model:
+  path: yolov8n.pt
+
+embedding:
+  backbone: resnet18
+  threshold: 0.72
+  preprocess_version: v1
+
+profiles:
+  root: data/profiles
+
+cloud:
+  db_path: data/cloud/prescience.db
+  pairing:
+    required: false
+  heartbeat_timeout_seconds: 90
+  sse_retry_ms: 1500

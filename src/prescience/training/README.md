@@ -1,11 +1,16 @@
 # training
 
-Training orchestration (wrappers around Ultralytics training).
+Training notes for Prescience detector workflows.
 
-## Responsibilities
-- Launch training runs with project defaults
-- Save weights and metadata in a consistent location
-- Record params/metrics for reproducibility
+## Current Workflow
 
-## Notes
-Training workflows change often; keep them isolated from runtime pipelines.
+Training is orchestrated through pipeline and dataset modules, not standalone scripts:
+
+- `prescience enroll label` performs onboarding stage1/stage2 training.
+- `prescience train detector` builds a versioned dataset and trains a stable SKU model.
+
+Stable output path convention:
+
+- `data/models/yolo/{sku}_{version}/best.pt`
+
+Ultralytics internal run paths can vary; the pipeline always copies `best.pt` to this stable location.

@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from prescience.datasets.bootstrap_label import BootstrapParams, run_bootstrap_labeling
+from prescience.datasets.bootstrap_label import OnboardingParams, run_onboarding_labeling
 
 
 def main() -> None:
@@ -16,7 +16,7 @@ def main() -> None:
 
     args = p.parse_args()
 
-    params = BootstrapParams(
+    params = OnboardingParams(
         sku=args.sku,
         frames_dir=Path(f"data/derived/frames/{args.sku}/frames"),
         labels_dir=Path(f"data/derived/labels/{args.sku}/labels"),
@@ -28,7 +28,7 @@ def main() -> None:
         retrain_after_approve=not args.no_retrain,
     )
 
-    run_bootstrap_labeling(params)
+    run_onboarding_labeling(params)
 
 
 if __name__ == "__main__":

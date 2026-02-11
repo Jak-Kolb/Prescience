@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prescience Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+      :root {
+        --bg: #f4f5f8;
+        --card: #ffffff;
+        --ink: #1f2833;
+        --muted: #65727f;
+        --accent: #0077cc;
+        --warn: #cc6b00;
+      }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        background: linear-gradient(145deg, #e9edf3, #f7f8fb);
+        color: var(--ink);
+      }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .card {
+        background: var(--card);
+        border-radius: 12px;
+        padding: 14px;
+        box-shadow: 0 4px 20px rgba(32, 48, 64, 0.08);
+      }
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .value {
+        font-size: 30px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .ok { color: #0a7f3f; }
+      .warn { color: var(--warn); }
+      form {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      input, button {
+        border: 1px solid #c8d1dc;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 14px;
+      }
+      button {
+        background: var(--accent);
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th, td {
+        padding: 8px;
+        border-bottom: 1px solid #edf1f5;
+        text-align: left;
+        font-size: 14px;
+      }
+      code {
+        background: #eef2f7;
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      ul {
+        margin: 8px 0 0;
+        padding-left: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Prescience Live Dashboard</h1>
+      <p>Line: <code id="line-id">{{ line_id }}</code> | Pairing required: <code>{{ pairing_required }}</code></p>
+
+      <section class="grid">
+        <div class="card">
+          <div class="label">Total Count</div>
+          <div class="value" id="total-count">{{ live.totals.overall }}</div>
+        </div>
+        <div class="card">
+          <div class="label">Unknown Count</div>
+          <div class="value" id="unknown-count">{{ live.totals.unknown }}</div>
+        </div>
+        <div class="card">
+          <div class="label">Throughput (units/min)</div>
+          <div class="value" id="throughput">{{ '%.2f'|format(live.throughput.units_per_min) }}</div>
+        </div>
+        <div class="card">
+          <div class="label">Recent Alerts</div>
+          <div class="value" id="alerts-recent">{{ live.alerts_recent }}</div>
+        </div>
+      </section>
+
+      <section class="grid" style="margin-top:12px;">
+        <div class="card">
+          <div class="label">By SKU</div>
+          <ul id="sku-list"></ul>
+        </div>
+        <div class="card">
+          <div class="label">Device Health</div>
+          <div>Last heartbeat: <code id="hb-time">{{ live.device_health.last_heartbeat or 'n/a' }}</code></div>
+          <div>FPS: <code id="hb-fps">{{ live.device_health.fps or 'n/a' }}</code></div>
+          <div>Brightness: <code id="hb-bright">{{ live.device_health.brightness or 'n/a' }}</code></div>
+          <div>Blur: <code id="hb-blur">{{ live.device_health.blur_score or 'n/a' }}</code></div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:12px;">
+        <h3>Run Controls (HTMX)</h3>
+        <div class="row">
+          <form hx-post="/ui/runs/start" hx-target="#action-result" hx-swap="innerHTML">
+            <input type="text" name="line_id" value="{{ line_id }}" required />
+            <input type="text" name="device_id" value="device-1" required />
+            <input type="text" name="run_id" placeholder="optional run id" />
+            <button type="submit">Start Run</button>
+          </form>
+          <form hx-post="/ui/runs/stop" hx-target="#action-result" hx-swap="innerHTML">
+            <input type="text" name="run_id" placeholder="run id" required />
+            <button type="submit">Stop Run</button>
+          </form>
+          <form hx-post="/ui/pair-codes" hx-target="#action-result" hx-swap="innerHTML">
+            <input type="text" name="line_id" value="{{ line_id }}" required />
+            <input type="number" name="ttl_seconds" value="600" min="30" />
+            <button type="submit">Create Pair Code</button>
+          </form>
+        </div>
+        <div id="action-result"></div>
+      </section>
+
+      <section class="card" style="margin-top:12px;">
+        <h3>SKU Enrollment Videos</h3>
+        <p>Enter a SKU name and select/drag a video from your laptop. Files are auto-saved as <code>&lt;sku&gt;_N.MOV</code>.</p>
+        <div class="row">
+          <form
+            hx-post="/ui/sku/upload-video"
+            hx-target="#action-result"
+            hx-swap="innerHTML"
+            hx-encoding="multipart/form-data"
+          >
+            <input type="text" name="sku" placeholder="new or existing sku" required />
+            <input type="file" name="video" accept="video/*" required />
+            <button type="submit">Upload Video</button>
+          </form>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="label">Quick Add To Existing SKU</div>
+          {% if skus %}
+            <div class="row" style="margin-top:6px;">
+              {% for sku in skus %}
+                <div class="row" style="align-items:center;">
+                  <form
+                    hx-post="/ui/sku/upload-video"
+                    hx-target="#action-result"
+                    hx-swap="innerHTML"
+                    hx-encoding="multipart/form-data"
+                  >
+                    <input type="hidden" name="sku" value="{{ sku.sku_id }}" />
+                    <span><code>{{ sku.sku_id }}</code></span>
+                    <input type="file" name="video" accept="video/*" required />
+                    <button type="submit">Add Video</button>
+                  </form>
+                  <form
+                    hx-post="/ui/skus/delete"
+                    hx-target="#action-result"
+                    hx-swap="innerHTML"
+                    hx-confirm="Delete SKU '{{ sku.sku_id }}' and all related videos/models/data?"
+                  >
+                    <input type="hidden" name="sku_id" value="{{ sku.sku_id }}" />
+                    <button type="submit" style="background:#b42318;">Delete SKU</button>
+                  </form>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p>No SKUs yet. Upload a video with a new SKU name above.</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:12px;">
+        <h3>Runs</h3>
+        <table>
+          <thead>
+            <tr><th>Run ID</th><th>Line</th><th>Device</th><th>Started</th><th>Ended</th><th>Source</th></tr>
+          </thead>
+          <tbody>
+            {% for run in runs %}
+            <tr>
+              <td><code>{{ run.run_id }}</code></td>
+              <td>{{ run.line_id }}</td>
+              <td>{{ run.device_id }}</td>
+              <td>{{ run.started_at }}</td>
+              <td>{{ run.ended_at or 'ACTIVE' }}</td>
+              <td>{{ run.source }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const initialBySku = {{ live.totals.by_sku | tojson }};
+      const skuList = document.getElementById("sku-list");
+
+      function renderSkuMap(map) {
+        skuList.innerHTML = "";
+        const entries = Object.entries(map || {});
+        if (entries.length === 0) {
+          const li = document.createElement("li");
+          li.textContent = "No counts yet";
+          skuList.appendChild(li);
+          return;
+        }
+        entries.sort((a, b) => b[1] - a[1]);
+        for (const [sku, value] of entries) {
+          const li = document.createElement("li");
+          li.textContent = `${sku}: ${value}`;
+          skuList.appendChild(li);
+        }
+      }
+
+      function updateLive(live) {
+        if (!live) return;
+        document.getElementById("total-count").textContent = live.totals.overall;
+        document.getElementById("unknown-count").textContent = live.totals.unknown;
+        document.getElementById("throughput").textContent = Number(live.throughput.units_per_min).toFixed(2);
+        document.getElementById("alerts-recent").textContent = live.alerts_recent;
+
+        document.getElementById("hb-time").textContent = live.device_health.last_heartbeat || "n/a";
+        document.getElementById("hb-fps").textContent = live.device_health.fps ?? "n/a";
+        document.getElementById("hb-bright").textContent = live.device_health.brightness ?? "n/a";
+        document.getElementById("hb-blur").textContent = live.device_health.blur_score ?? "n/a";
+
+        renderSkuMap(live.totals.by_sku || {});
+      }
+
+      renderSkuMap(initialBySku);
+
+      const lineId = document.getElementById("line-id").textContent;
+      const stream = new EventSource(`/stream?line_id=${encodeURIComponent(lineId)}`);
+      stream.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        updateLive(payload.live);
+      };
+      stream.onerror = () => {
+        // browser auto-reconnects using SSE retry interval
+      };
+    </script>
+  </body>
+</html>
