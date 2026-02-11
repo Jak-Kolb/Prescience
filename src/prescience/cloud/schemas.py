@@ -26,3 +26,32 @@ class SKUUpsertRequest(BaseModel):
     profile_path: str | None = None
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     metadata: dict | None = None
+
+
+class OnboardingBoxRequest(BaseModel):
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+
+class OnboardingLabelRequest(BaseModel):
+    frame_name: str
+    status: str = Field(pattern="^(positive|negative|skipped)$")
+    boxes: list[OnboardingBoxRequest] = Field(default_factory=list)
+    stage: str = Field(default="seed", pattern="^(seed|approval)$")
+
+
+class ZoneConfigRequest(BaseModel):
+    polygon: list[tuple[int, int]]
+    direction: str
+
+
+class TrackingStartRequest(BaseModel):
+    source: str = "0"
+    line_id: str = "line-1"
+    device_id: str = "device-1"
+    sku_id: str
+    model_path: str | None = None
+    run_id: str | None = None
+    event_endpoint: str | None = None

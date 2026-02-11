@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -465,6 +467,309 @@ class CloudStore:
         finally:
             conn.close()
 
+    @staticmethod
+    def _json_load(raw: str | None, fallback: Any) -> Any:
+        if raw is None:
+            return fallback
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return fallback
+
+    def create_ui_job(
+        self,
+        *,
+        sku_id: str,
+        job_type: str,
+        status: str = "queued",
+        step: str | None = None,
+        progress: float | None = 0.0,
+        message: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new UI workflow job row."""
+        job_id = str(uuid4())
+        now = self._iso_now()
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO ui_jobs(
+                        job_id, sku_id, type, status, step, progress, message,
+                        payload_json, error_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        sku_id,
+                        job_type,
+                        status,
+                        step,
+                        progress,
+                        message,
+                        json.dumps(payload or {}),
+                        now,
+                        now,
+                    ),
+                )
+            return self.get_ui_job(job_id) or {}
+        finally:
+            conn.close()
+
+    def update_ui_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        step: str | None = None,
+        progress: float | None = None,
+        message: str | None = None,
+        payload: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update UI job fields and return latest row."""
+        row = self.get_ui_job(job_id)
+        if row is None:
+            return None
+
+        current_payload = row.get("payload", {})
+        merged_payload = current_payload if payload is None else payload
+        current_error = row.get("error", {})
+        merged_error = current_error if error is None else error
+
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE ui_jobs
+                    SET status=?,
+                        step=?,
+                        progress=?,
+                        message=?,
+                        payload_json=?,
+                        error_json=?,
+                        updated_at=?
+                    WHERE job_id=?
+                    """,
+                    (
+                        status if status is not None else row["status"],
+                        step if step is not None else row["step"],
+                        progress if progress is not None else row["progress"],
+                        message if message is not None else row["message"],
+                        json.dumps(merged_payload),
+                        json.dumps(merged_error),
+                        self._iso_now(),
+                        job_id,
+                    ),
+                )
+            return self.get_ui_job(job_id)
+        finally:
+            conn.close()
+
+    def get_ui_job(self, job_id: str) -> dict[str, Any] | None:
+        """Fetch one UI job by id."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT * FROM ui_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["payload"] = self._json_load(out.get("payload_json"), {})
+            out["error"] = self._json_load(out.get("error_json"), {})
+            return out
+        finally:
+            conn.close()
+
+    def list_ui_jobs(self, sku_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """List UI jobs sorted by most recent updates."""
+        conn = self._conn()
+        try:
+            if sku_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM ui_jobs ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM ui_jobs WHERE sku_id=? ORDER BY updated_at DESC LIMIT ?",
+                    (sku_id, limit),
+                ).fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["payload"] = self._json_load(item.get("payload_json"), {})
+                item["error"] = self._json_load(item.get("error_json"), {})
+                out.append(item)
+            return out
+        finally:
+            conn.close()
+
+    def create_onboarding_session(
+        self,
+        *,
+        sku_id: str,
+        version_tag: str,
+        mode: str,
+        state: str,
+        seed_candidates: list[dict[str, Any]] | None = None,
+        approval_candidates: list[dict[str, Any]] | None = None,
+        stage1_model_path: str | None = None,
+        latest_job_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create onboarding session row."""
+        session_id = str(uuid4())
+        now = self._iso_now()
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO onboarding_sessions(
+                        session_id, sku_id, version_tag, mode, state,
+                        seed_candidates_json, approval_candidates_json, stage1_model_path,
+                        latest_job_id, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        sku_id,
+                        version_tag,
+                        mode,
+                        state,
+                        json.dumps(seed_candidates or []),
+                        json.dumps(approval_candidates or []),
+                        stage1_model_path,
+                        latest_job_id,
+                        now,
+                        now,
+                    ),
+                )
+            session = self.get_onboarding_session(session_id)
+            return session or {}
+        finally:
+            conn.close()
+
+    def get_onboarding_session(self, session_id: str) -> dict[str, Any] | None:
+        """Load one onboarding session by id."""
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM onboarding_sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            item = dict(row)
+            item["seed_candidates"] = self._json_load(item.get("seed_candidates_json"), [])
+            item["approval_candidates"] = self._json_load(item.get("approval_candidates_json"), [])
+            return item
+        finally:
+            conn.close()
+
+    def update_onboarding_session(
+        self,
+        session_id: str,
+        *,
+        state: str | None = None,
+        seed_candidates: list[dict[str, Any]] | None = None,
+        approval_candidates: list[dict[str, Any]] | None = None,
+        stage1_model_path: str | None = None,
+        latest_job_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Patch onboarding session fields and return latest row."""
+        existing = self.get_onboarding_session(session_id)
+        if existing is None:
+            return None
+
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE onboarding_sessions
+                    SET state=?,
+                        seed_candidates_json=?,
+                        approval_candidates_json=?,
+                        stage1_model_path=?,
+                        latest_job_id=?,
+                        updated_at=?
+                    WHERE session_id=?
+                    """,
+                    (
+                        state if state is not None else existing["state"],
+                        json.dumps(seed_candidates if seed_candidates is not None else existing["seed_candidates"]),
+                        json.dumps(
+                            approval_candidates
+                            if approval_candidates is not None
+                            else existing["approval_candidates"]
+                        ),
+                        stage1_model_path if stage1_model_path is not None else existing["stage1_model_path"],
+                        latest_job_id if latest_job_id is not None else existing["latest_job_id"],
+                        self._iso_now(),
+                        session_id,
+                    ),
+                )
+            return self.get_onboarding_session(session_id)
+        finally:
+            conn.close()
+
+    def list_onboarding_sessions(self, sku_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """List onboarding sessions, newest first."""
+        conn = self._conn()
+        try:
+            if sku_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM onboarding_sessions ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM onboarding_sessions WHERE sku_id=? ORDER BY updated_at DESC LIMIT ?",
+                    (sku_id, limit),
+                ).fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["seed_candidates"] = self._json_load(item.get("seed_candidates_json"), [])
+                item["approval_candidates"] = self._json_load(item.get("approval_candidates_json"), [])
+                out.append(item)
+            return out
+        finally:
+            conn.close()
+
+    def get_ui_snapshot(self, sku_id: str | None = None) -> dict[str, Any]:
+        """Return consolidated UI workflow snapshot for SSE updates."""
+        return {
+            "generated_at": self._iso_now(),
+            "jobs": self.list_ui_jobs(sku_id=sku_id, limit=50),
+            "sessions": self.list_onboarding_sessions(sku_id=sku_id, limit=20),
+        }
+
+    def list_model_versions_for_sku(self, sku_id: str, models_root: str | Path = "data/models/yolo") -> list[int]:
+        """List numeric stable model versions available for a SKU."""
+        root = Path(models_root)
+        if not root.exists():
+            return []
+        pattern = re.compile(rf"^{re.escape(sku_id)}_v(\d+)$")
+        versions: list[int] = []
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            match = pattern.match(child.name)
+            if match is None:
+                continue
+            if (child / "best.pt").exists():
+                versions.append(int(match.group(1)))
+        return sorted(set(versions))
+
+    def sku_full_train_ready(self, sku_id: str, models_root: str | Path = "data/models/yolo") -> bool:
+        """True when SKU has at least v1+v2 stable models."""
+        return len(self.list_model_versions_for_sku(sku_id=sku_id, models_root=models_root)) >= 2
+
     def sync_skus_from_profiles(self, profiles_root: str | Path) -> dict[str, int]:
         """Register missing SKUs from profile.json files under profiles root."""
         root = Path(profiles_root)
@@ -570,6 +875,8 @@ class CloudStore:
         try:
             with conn:
                 deleted_db_row = conn.execute("DELETE FROM skus WHERE sku_id=?", (sku_id,)).rowcount > 0
+                conn.execute("DELETE FROM ui_jobs WHERE sku_id=?", (sku_id,))
+                conn.execute("DELETE FROM onboarding_sessions WHERE sku_id=?", (sku_id,))
         finally:
             conn.close()
 

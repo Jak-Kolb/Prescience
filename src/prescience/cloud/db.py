@@ -63,6 +63,39 @@ CREATE TABLE IF NOT EXISTS pair_codes (
   used_by TEXT,
   used_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS ui_jobs (
+  job_id TEXT PRIMARY KEY,
+  sku_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  step TEXT,
+  progress REAL,
+  message TEXT,
+  payload_json TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ui_jobs_sku_updated ON ui_jobs(sku_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ui_jobs_status_updated ON ui_jobs(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS onboarding_sessions (
+  session_id TEXT PRIMARY KEY,
+  sku_id TEXT NOT NULL,
+  version_tag TEXT,
+  mode TEXT NOT NULL,
+  state TEXT NOT NULL,
+  seed_candidates_json TEXT,
+  approval_candidates_json TEXT,
+  stage1_model_path TEXT,
+  latest_job_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_sku_updated ON onboarding_sessions(sku_id, updated_at DESC);
 """
 
 
