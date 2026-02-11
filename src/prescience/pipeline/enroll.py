@@ -17,10 +17,23 @@ from prescience.datasets.yolo import TrainConfig, build_yolo_dataset, collect_la
 from prescience.ingest.video_to_frames import ExtractParams, extract_frames
 from prescience.profiles.io import save_profile
 from prescience.profiles.schema import ProfileMetadata, ProfileModelInfo, SKUProfile
+from prescience.training.state import (
+    apply_training_state_update,
+    load_or_create_train_state,
+    save_train_state,
+    select_training_names,
+    train_state_path_for_labels,
+)
+from prescience.training.strategy import (
+    resolve_detector_training_config,
+    resolve_onboarding_training_config,
+)
 from prescience.vision.embeddings import build_embedder
 
 SKU_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 VIDEO_NAME_PATTERN_TEMPLATE = r"^{sku}_(\d+)\.[A-Za-z0-9]+$"
+MODEL_VERSION_DIR_PATTERN_TEMPLATE = r"^{sku}_v(\d+)$"
+VERSION_TAG_PATTERN = re.compile(r"^v(\d+)$")
 
 
 def normalize_sku_name(sku: str) -> str:
@@ -72,6 +85,55 @@ def append_frames_to_existing_dataset(source_frames_dir: Path, target_frames_dir
         next_idx += 1
 
     return moved
+
+
+def _parse_numeric_version(version: str | None) -> int | None:
+    if version is None:
+        return None
+    match = VERSION_TAG_PATTERN.fullmatch(version.strip())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _list_model_versions_for_sku(sku: str, models_root: Path) -> list[int]:
+    if not models_root.exists():
+        return []
+    pattern = re.compile(MODEL_VERSION_DIR_PATTERN_TEMPLATE.format(sku=re.escape(sku)))
+    out: list[int] = []
+    for child in models_root.iterdir():
+        if not child.is_dir():
+            continue
+        match = pattern.match(child.name)
+        if match is None:
+            continue
+        best = child / "best.pt"
+        if best.exists():
+            out.append(int(match.group(1)))
+    return sorted(set(out))
+
+
+def resolve_base_model_for_sku(
+    *,
+    sku: str,
+    base_model: str,
+    target_version: int | None,
+    models_root: Path = Path("data/models/yolo"),
+    default_base_model: str = "yolov8n.pt",
+) -> str:
+    """Resolve base model path; auto picks latest prior version when available."""
+    if base_model != "auto":
+        return base_model
+
+    versions = _list_model_versions_for_sku(sku=sku, models_root=models_root)
+    if target_version is not None:
+        versions = [version for version in versions if version < target_version]
+
+    for version in sorted(versions, reverse=True):
+        candidate = models_root / f"{sku}_v{version}" / "best.pt"
+        if candidate.exists():
+            return str(candidate)
+    return default_base_model
 
 
 def extract_frames_for_sku(
@@ -148,13 +210,49 @@ def run_onboarding_labeling_for_sku(
     approve_per_section: int = 5,
     overwrite: bool = False,
     allow_negatives: bool = True,
-    base_model: str = "yolov8n.pt",
-    imgsz: int = 960,
-    epochs_stage1: int = 30,
-    epochs_stage2: int = 60,
+    base_model: str = "auto",
+    mode: str = "quick",
+    dataset_scope: str | None = None,
+    core_size: int | None = None,
+    imgsz: int | None = None,
+    epochs_stage1: int | None = None,
+    epochs_stage2: int | None = None,
+    patience: int | None = None,
+    freeze: int | None = None,
+    workers: int | None = None,
     version: int | None = None,
 ) -> None:
     """Launch two-stage onboarding labeling workflow for SKU."""
+    resolved = resolve_onboarding_training_config(
+        mode=mode,
+        dataset_scope=dataset_scope,
+        core_size=core_size,
+        imgsz=imgsz,
+        epochs_stage1=epochs_stage1,
+        epochs_stage2=epochs_stage2,
+        patience=patience,
+        freeze=freeze,
+        workers=workers,
+    )
+    resolved_base_model = resolve_base_model_for_sku(
+        sku=sku,
+        base_model=base_model,
+        target_version=version,
+    )
+    print(
+        "[onboarding] "
+        f"mode={resolved.mode} "
+        f"scope={resolved.dataset_scope} "
+        f"base_model={resolved_base_model} "
+        f"imgsz={resolved.imgsz} "
+        f"epochs_stage1={resolved.epochs_stage1} "
+        f"epochs_stage2={resolved.epochs_stage2} "
+        f"patience={resolved.patience} "
+        f"freeze={resolved.freeze} "
+        f"workers={resolved.workers} "
+        f"core_size={resolved.core_size}"
+    )
+
     run_onboarding_labeling(
         OnboardingParams(
             sku=sku,
@@ -164,10 +262,16 @@ def run_onboarding_labeling_for_sku(
             approve_per_section=approve_per_section,
             overwrite=overwrite,
             allow_negatives=allow_negatives,
-            base_model=base_model,
-            imgsz=imgsz,
-            epochs_stage1=epochs_stage1,
-            epochs_stage2=epochs_stage2,
+            base_model=resolved_base_model,
+            mode=resolved.mode,
+            dataset_scope=resolved.dataset_scope,
+            core_size=resolved.core_size,
+            imgsz=resolved.imgsz,
+            epochs_stage1=resolved.epochs_stage1,
+            epochs_stage2=resolved.epochs_stage2,
+            patience=resolved.patience,
+            freeze=resolved.freeze,
+            workers=resolved.workers,
             version=version,
         )
     )
@@ -180,22 +284,66 @@ run_bootstrap_labeling_for_sku = run_onboarding_labeling_for_sku
 def train_detector_for_sku(
     sku: str,
     version: str,
-    epochs: int,
-    imgsz: int,
-    conf: float,
-    base_model: str,
+    mode: str = "quick",
+    dataset_scope: str | None = None,
+    core_size: int | None = None,
+    epochs: int | None = None,
+    imgsz: int | None = None,
+    patience: int | None = None,
+    freeze: int | None = None,
+    workers: int | None = None,
+    conf: float = 0.35,
+    base_model: str = "auto",
 ) -> Path:
-    """Train detector from all current labeled frames."""
+    """Train detector from current labeled frames with mode-aware dataset scope."""
     frames_dir = Path(f"data/derived/frames/{sku}/frames")
     labels_dir = Path(f"data/derived/labels/{sku}/labels")
+
+    resolved = resolve_detector_training_config(
+        mode=mode,
+        dataset_scope=dataset_scope,
+        core_size=core_size,
+        imgsz=imgsz,
+        epochs=epochs,
+        patience=patience,
+        freeze=freeze,
+        workers=workers,
+    )
+    resolved_base_model = resolve_base_model_for_sku(
+        sku=sku,
+        base_model=base_model,
+        target_version=_parse_numeric_version(version),
+    )
 
     labeled = collect_labeled_images(frames_dir=frames_dir, labels_dir=labels_dir)
     if not labeled:
         raise RuntimeError(f"No labeled images found for SKU {sku}")
 
+    train_state_path = train_state_path_for_labels(labels_dir=labels_dir)
+    train_state = load_or_create_train_state(train_state_path)
+    selection = select_training_names(
+        labeled_names=[path.name for path in labeled],
+        scope=resolved.dataset_scope,
+        core_size=resolved.core_size,
+        train_state=train_state,
+    )
+    name_to_path = {path.name: path for path in labeled}
+    selected = [name_to_path[name] for name in selection.selected_names if name in name_to_path]
+    if not selected:
+        raise RuntimeError(
+            f"No selected training images for SKU {sku} (mode={resolved.mode}, scope={resolved.dataset_scope})."
+        )
+    print(
+        "[train detector] "
+        f"mode={resolved.mode} scope={resolved.dataset_scope} "
+        f"base_model={resolved_base_model} imgsz={resolved.imgsz} epochs={resolved.epochs} "
+        f"patience={resolved.patience} freeze={resolved.freeze} workers={resolved.workers} "
+        f"selected={len(selected)}/{len(labeled)} core={len(selection.core_names)} new={len(selection.new_names)}"
+    )
+
     dataset_dir = Path(f"data/datasets/yolo/{sku}_{version}")
     data_yaml = build_yolo_dataset(
-        labeled_images=labeled,
+        labeled_images=selected,
         labels_dir=labels_dir,
         out_dataset_dir=dataset_dir,
         class_name="product",
@@ -205,8 +353,23 @@ def train_detector_for_sku(
     best = train_yolo_model(
         data_yaml=data_yaml,
         model_out_dir=model_dir,
-        config=TrainConfig(base_model=base_model, imgsz=imgsz, epochs=epochs, conf=conf),
+        config=TrainConfig(
+            base_model=resolved_base_model,
+            imgsz=resolved.imgsz,
+            epochs=resolved.epochs,
+            conf=conf,
+            patience=resolved.patience,
+            freeze=resolved.freeze,
+            workers=resolved.workers,
+        ),
     )
+    updated_state = apply_training_state_update(
+        train_state=train_state,
+        selection=selection,
+        trained_model_path=str(best),
+        mode=resolved.mode,
+    )
+    save_train_state(train_state_path, updated_state)
     print(f"Trained model: {best}")
     return best
 

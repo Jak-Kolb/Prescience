@@ -26,6 +26,14 @@ from prescience.datasets.yolo import (
     list_images,
     train_yolo_model,
 )
+from prescience.training.state import (
+    apply_training_state_update,
+    load_or_create_train_state,
+    save_train_state,
+    select_training_names,
+    train_state_path_for_labels,
+)
+from prescience.training.strategy import resolve_onboarding_training_config
 
 
 @dataclass(frozen=True)
@@ -37,12 +45,18 @@ class OnboardingParams:
     manual_per_section: int = 2
     approve_per_section: int = 5
     class_id: int = 0
-    base_model: str = "yolov8n.pt"
-    imgsz: int = 960
+    base_model: str = "auto"
+    mode: str = "quick"
+    dataset_scope: str | None = None
+    core_size: int | None = None
+    imgsz: int | None = None
     conf_propose: float = 0.10
-    epochs_stage1: int = 30
+    epochs_stage1: int | None = None
     retrain_after_approve: bool = True
-    epochs_stage2: int = 60
+    epochs_stage2: int | None = None
+    patience: int | None = None
+    freeze: int | None = None
+    workers: int | None = None
     pick_largest: bool = True
     overwrite: bool = False
     allow_negatives: bool = True
@@ -420,6 +434,27 @@ def _select_processable_image_names(
 
 
 def run_onboarding_labeling(params: OnboardingParams) -> None:
+    resolved = resolve_onboarding_training_config(
+        mode=params.mode,
+        dataset_scope=params.dataset_scope,
+        core_size=params.core_size,
+        imgsz=params.imgsz,
+        epochs_stage1=params.epochs_stage1,
+        epochs_stage2=params.epochs_stage2,
+        patience=params.patience,
+        freeze=params.freeze,
+        workers=params.workers,
+    )
+    base_model = params.base_model if params.base_model != "auto" else "yolov8n.pt"
+    print(
+        "[onboarding train] "
+        f"mode={resolved.mode} scope={resolved.dataset_scope} "
+        f"base_model={base_model} imgsz={resolved.imgsz} "
+        f"epochs_stage1={resolved.epochs_stage1} epochs_stage2={resolved.epochs_stage2} "
+        f"patience={resolved.patience} freeze={resolved.freeze} workers={resolved.workers} "
+        f"core_size={resolved.core_size}"
+    )
+
     images = list_images(params.frames_dir)
     if not images:
         raise RuntimeError(f"No images found in {params.frames_dir}")
@@ -467,9 +502,30 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
             upsert_record(manifest, image.name, result, str(label_path))
             save_manifest(manifest_path, manifest)
 
-    labeled_stage1 = collect_labeled_images(params.frames_dir, params.labels_dir)
-    if not labeled_stage1:
+    labeled_stage1_all = collect_labeled_images(params.frames_dir, params.labels_dir)
+    if not labeled_stage1_all:
         raise RuntimeError("No labels available after stage1; aborting")
+
+    train_state_path = train_state_path_for_labels(labels_dir=params.labels_dir)
+    train_state = load_or_create_train_state(train_state_path)
+    selection_stage1 = select_training_names(
+        labeled_names=[path.name for path in labeled_stage1_all],
+        scope=resolved.dataset_scope,
+        core_size=resolved.core_size,
+        train_state=train_state,
+    )
+    stage1_name_to_path = {path.name: path for path in labeled_stage1_all}
+    labeled_stage1 = [stage1_name_to_path[name] for name in selection_stage1.selected_names if name in stage1_name_to_path]
+    if not labeled_stage1:
+        raise RuntimeError(
+            f"No selected stage1 training images for SKU {params.sku} "
+            f"(mode={resolved.mode}, scope={resolved.dataset_scope})."
+        )
+    print(
+        "[onboarding stage1] "
+        f"selected={len(labeled_stage1)}/{len(labeled_stage1_all)} "
+        f"core={len(selection_stage1.core_names)} new={len(selection_stage1.new_names)}"
+    )
 
     models_root = Path("data/models/yolo")
     datasets_root = Path("data/datasets/yolo")
@@ -493,10 +549,13 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                     data_yaml=data_yaml_stage1,
                     model_out_dir=stage1_model_dir,
                     config=TrainConfig(
-                        base_model=params.base_model,
-                        imgsz=params.imgsz,
-                        epochs=params.epochs_stage1,
+                        base_model=base_model,
+                        imgsz=resolved.imgsz,
+                        epochs=resolved.epochs_stage1,
                         conf=params.conf_propose,
+                        patience=resolved.patience,
+                        freeze=resolved.freeze,
+                        workers=resolved.workers,
                     ),
                 )
 
@@ -525,7 +584,7 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                         model=proposer,
                         class_id=params.class_id,
                         conf=params.conf_propose,
-                        imgsz=params.imgsz,
+                        imgsz=resolved.imgsz,
                         pick_largest=params.pick_largest,
                         allow_negatives=params.allow_negatives,
                     )
@@ -537,7 +596,26 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                         upsert_record(manifest, image.name, result, str(label_path))
                         save_manifest(manifest_path, manifest)
 
-                labeled_stage2 = collect_labeled_images(params.frames_dir, params.labels_dir)
+                labeled_stage2_all = collect_labeled_images(params.frames_dir, params.labels_dir)
+                selection_stage2 = select_training_names(
+                    labeled_names=[path.name for path in labeled_stage2_all],
+                    scope=resolved.dataset_scope,
+                    core_size=resolved.core_size,
+                    train_state=train_state,
+                )
+                stage2_name_to_path = {path.name: path for path in labeled_stage2_all}
+                labeled_stage2 = [stage2_name_to_path[name] for name in selection_stage2.selected_names if name in stage2_name_to_path]
+                if not labeled_stage2:
+                    raise RuntimeError(
+                        f"No selected stage2 training images for SKU {params.sku} "
+                        f"(mode={resolved.mode}, scope={resolved.dataset_scope})."
+                    )
+                print(
+                    "[onboarding stage2] "
+                    f"selected={len(labeled_stage2)}/{len(labeled_stage2_all)} "
+                    f"core={len(selection_stage2.core_names)} new={len(selection_stage2.new_names)}"
+                )
+
                 final_dataset_dir = Path(f"data/datasets/yolo/{model_tag}")
                 data_yaml_stage2 = build_yolo_dataset(
                     labeled_images=labeled_stage2,
@@ -552,9 +630,12 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                     model_out_dir=final_model_dir,
                     config=TrainConfig(
                         base_model=str(best_stage1),
-                        imgsz=params.imgsz,
-                        epochs=params.epochs_stage2,
+                        imgsz=resolved.imgsz,
+                        epochs=resolved.epochs_stage2,
                         conf=params.conf_propose,
+                        patience=resolved.patience,
+                        freeze=resolved.freeze,
+                        workers=resolved.workers,
                     ),
                 )
 
@@ -563,6 +644,13 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
                 manifest.model_version = f"v{version_num}"
                 manifest.final_model = str(best_stage2)
                 save_manifest(manifest_path, manifest)
+                updated_state = apply_training_state_update(
+                    train_state=train_state,
+                    selection=selection_stage2,
+                    trained_model_path=str(best_stage2),
+                    mode=resolved.mode,
+                )
+                save_train_state(train_state_path, updated_state)
                 return
 
     # If retraining is disabled, stage-1 model becomes the final versioned model.
@@ -578,10 +666,13 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
         data_yaml=data_yaml_stage1,
         model_out_dir=final_model_dir,
         config=TrainConfig(
-            base_model=params.base_model,
-            imgsz=params.imgsz,
-            epochs=params.epochs_stage1,
+            base_model=base_model,
+            imgsz=resolved.imgsz,
+            epochs=resolved.epochs_stage1,
             conf=params.conf_propose,
+            patience=resolved.patience,
+            freeze=resolved.freeze,
+            workers=resolved.workers,
         ),
     )
     manifest.stage1_model = None
@@ -589,6 +680,13 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
     manifest.model_version = f"v{version_num}"
     manifest.final_model = str(best_stage1)
     save_manifest(manifest_path, manifest)
+    updated_state = apply_training_state_update(
+        train_state=train_state,
+        selection=selection_stage1,
+        trained_model_path=str(best_stage1),
+        mode=resolved.mode,
+    )
+    save_train_state(train_state_path, updated_state)
 
 
 # Backward-compatible aliases while the onboarding naming propagates.
