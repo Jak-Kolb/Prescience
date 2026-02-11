@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -14,6 +19,60 @@ from prescience.profiles.io import save_profile
 from prescience.profiles.schema import ProfileMetadata, ProfileModelInfo, SKUProfile
 from prescience.vision.embeddings import build_embedder
 
+SKU_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+VIDEO_NAME_PATTERN_TEMPLATE = r"^{sku}_(\d+)\.[A-Za-z0-9]+$"
+
+
+def normalize_sku_name(sku: str) -> str:
+    """Normalize and validate user-provided SKU names."""
+    normalized = sku.strip()
+    if not normalized:
+        raise ValueError("SKU name cannot be empty")
+    if not SKU_NAME_PATTERN.fullmatch(normalized):
+        raise ValueError("SKU name must match [A-Za-z0-9_-]+")
+    return normalized
+
+
+def next_enrollment_video_path(raw_videos_root: Path, sku: str, suffix: str = ".MOV") -> Path:
+    """Compute next auto-numbered raw enrollment video path for SKU."""
+    normalized = normalize_sku_name(sku)
+    sku_dir = raw_videos_root / normalized
+    sku_dir.mkdir(parents=True, exist_ok=True)
+
+    pattern = re.compile(VIDEO_NAME_PATTERN_TEMPLATE.format(sku=re.escape(normalized)))
+    max_idx = -1
+    for file_path in sku_dir.iterdir():
+        if not file_path.is_file():
+            continue
+        match = pattern.match(file_path.name)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+
+    next_idx = max_idx + 1
+    return sku_dir / f"{normalized}_{next_idx}{suffix}"
+
+
+def append_frames_to_existing_dataset(source_frames_dir: Path, target_frames_dir: Path) -> list[Path]:
+    """Append extracted frames into existing SKU frame set with new sequential indices."""
+    target_frames_dir.mkdir(parents=True, exist_ok=True)
+
+    max_idx = 0
+    for existing in target_frames_dir.glob("*.jpg"):
+        stem = existing.stem
+        if stem.isdigit():
+            max_idx = max(max_idx, int(stem))
+
+    next_idx = max_idx + 1
+    moved: list[Path] = []
+
+    for source in sorted(source_frames_dir.glob("*.jpg")):
+        destination = target_frames_dir / f"{next_idx:06d}.jpg"
+        shutil.move(str(source), str(destination))
+        moved.append(destination)
+        next_idx += 1
+
+    return moved
+
 
 def extract_frames_for_sku(
     video_path: Path,
@@ -22,16 +81,65 @@ def extract_frames_for_sku(
     out_root: Path,
     blur_min: float,
     dedupe_max_similarity: float,
+    append: bool = False,
 ) -> dict:
     """Extract enrollment frames for a SKU."""
+    normalized = normalize_sku_name(sku)
+    out_root.mkdir(parents=True, exist_ok=True)
+
     params = ExtractParams(
         target_frames=target_frames,
         blur_min=blur_min,
         dedupe_max_similarity=dedupe_max_similarity,
     )
-    meta = extract_frames(video_path=video_path, sku=sku, out_root=out_root, params=params)
-    print(f"Saved {meta['num_frames_saved']} frames to {meta['frames_dir']}")
-    return meta
+
+    if not append:
+        meta = extract_frames(video_path=video_path, sku=normalized, out_root=out_root, params=params)
+        print(f"Saved {meta['num_frames_saved']} frames to {meta['frames_dir']}")
+        return meta
+
+    sku_out_dir = out_root / normalized
+    target_frames_dir = sku_out_dir / "frames"
+    target_meta_path = sku_out_dir / "meta.json"
+
+    previous_meta: dict[str, Any] = {}
+    if target_meta_path.exists():
+        previous_meta = json.loads(target_meta_path.read_text(encoding="utf-8"))
+
+    with tempfile.TemporaryDirectory(prefix=f"{normalized}_extract_", dir=str(out_root)) as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        temp_meta = extract_frames(
+            video_path=video_path,
+            sku=normalized,
+            out_root=tmp_root,
+            params=params,
+        )
+        source_frames_dir = Path(temp_meta["frames_dir"])
+        moved = append_frames_to_existing_dataset(source_frames_dir=source_frames_dir, target_frames_dir=target_frames_dir)
+
+    all_saved = sorted(path.name for path in target_frames_dir.glob("*.jpg"))
+    append_history = previous_meta.get("append_history", [])
+    append_history.append(
+        {
+            "video_path": str(video_path),
+            "appended_count": len(moved),
+            "new_files": [path.name for path in moved],
+        }
+    )
+
+    merged_meta: dict[str, Any] = {
+        "sku": normalized,
+        "video_path": str(video_path),
+        "out_dir": str(sku_out_dir),
+        "frames_dir": str(target_frames_dir),
+        "num_frames_saved": len(all_saved),
+        "saved_filenames": all_saved,
+        "append_mode": True,
+        "append_history": append_history,
+    }
+    target_meta_path.write_text(json.dumps(merged_meta, indent=2), encoding="utf-8")
+    print(f"Appended {len(moved)} frames. Total frames in dataset: {len(all_saved)}")
+    return merged_meta
 
 
 def run_bootstrap_labeling_for_sku(

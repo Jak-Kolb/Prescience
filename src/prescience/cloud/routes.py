@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from prescience.cloud.schemas import PairCodeCreateRequest, PairDeviceRequest, RunStartRequest, SKUUpsertRequest
 from prescience.cloud.store import CloudStore
 from prescience.cloud.stream import SSEBroadcaster, encode_sse
 from prescience.events.schemas import AnyEvent
+from prescience.pipeline.enroll import next_enrollment_video_path, normalize_sku_name
 
 router = APIRouter()
 
@@ -203,5 +205,51 @@ def ui_create_pair_code(
         "<div class='ok'>"
         f"Pair code: <code>{data['code']}</code> "
         f"(expires {data['expires_at']})"
+        "</div>"
+    )
+
+
+@router.post("/ui/sku/upload-video", response_class=HTMLResponse)
+async def ui_upload_sku_video(
+    request: Request,
+    sku: str = Form(...),
+    video: UploadFile = File(...),
+) -> str:
+    """Upload SKU enrollment video and auto-name under data/raw/videos/{sku}/{sku}_{n}.MOV."""
+    if video.filename is None:
+        return "<div class='warn'>No file selected.</div>"
+
+    try:
+        normalized_sku = normalize_sku_name(sku)
+    except ValueError as exc:
+        return f"<div class='warn'>{exc}</div>"
+
+    target_path = next_enrollment_video_path(
+        raw_videos_root=Path("data/raw/videos"),
+        sku=normalized_sku,
+        suffix=".MOV",
+    )
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with target_path.open("wb") as f:
+        while True:
+            chunk = await video.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    await video.close()
+
+    _store(request).upsert_sku(
+        sku_id=normalized_sku,
+        name=normalized_sku,
+        profile_path=f"data/profiles/{normalized_sku}",
+        threshold=None,
+        metadata={"source": "ui_video_upload"},
+    )
+
+    return (
+        "<div class='ok'>"
+        f"Uploaded video for <code>{normalized_sku}</code> to "
+        f"<code>{target_path}</code>"
         "</div>"
     )

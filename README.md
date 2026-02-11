@@ -43,6 +43,15 @@ Main commands:
 - `prescience cloud serve`
 - `prescience demo run-local`
 
+Append additional enroll video frames to an existing SKU dataset:
+
+```bash
+prescience enroll extract-frames \
+  --video data/raw/videos/<sku>/<sku>_1.MOV \
+  --sku <sku> \
+  --append
+```
+
 ## End-to-End Demo
 
 1. Extract frames from enrollment video:
@@ -97,6 +106,14 @@ prescience run \
 ```
 
 8. Open dashboard: `http://127.0.0.1:8000`
+
+## Dashboard Video Upload
+
+From the dashboard, use **SKU Enrollment Videos** to upload local videos:
+
+- Enter a new SKU name + choose/drag a video: file is saved as `data/raw/videos/<sku>/<sku>_0.MOV`.
+- Upload another video for same SKU: auto-saved as `data/raw/videos/<sku>/<sku>_1.MOV`, then `_2`, etc.
+- Existing SKUs are shown with quick “Add Video” upload forms.
 
 ## Event Contract
 

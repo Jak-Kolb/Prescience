@@ -28,6 +28,7 @@ def enroll_extract_frames(
     out_root: Path = typer.Option(Path("data/derived/frames"), help="Output root"),
     blur_min: float = typer.Option(4.0, help="Minimum blur score"),
     dedupe_sim: float = typer.Option(0.98, help="Max dedupe similarity"),
+    append: bool = typer.Option(False, help="Append frames to existing SKU dataset"),
 ) -> None:
     """Extract evenly distributed enrollment frames."""
     from prescience.pipeline.enroll import extract_frames_for_sku
@@ -39,6 +40,7 @@ def enroll_extract_frames(
         out_root=out_root,
         blur_min=blur_min,
         dedupe_max_similarity=dedupe_sim,
+        append=append,
     )
 
 

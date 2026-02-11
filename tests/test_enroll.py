@@ -9,6 +9,11 @@ from prescience.datasets.manifest import (
     should_process,
     upsert_record,
 )
+from prescience.pipeline.enroll import (
+    append_frames_to_existing_dataset,
+    next_enrollment_video_path,
+    normalize_sku_name,
+)
 
 
 def test_manifest_round_trip_and_labeled_names(tmp_path: Path) -> None:
@@ -40,3 +45,48 @@ def test_should_process_honors_overwrite() -> None:
     assert should_process("000010.jpg", overwrite=False, labeled_names=labeled) is False
     assert should_process("000010.jpg", overwrite=True, labeled_names=labeled) is True
     assert should_process("000011.jpg", overwrite=False, labeled_names=labeled) is True
+
+
+def test_next_enrollment_video_path_increments_index(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw" / "videos"
+    first = next_enrollment_video_path(raw_videos_root=raw_root, sku="canA")
+    assert first.name == "canA_0.MOV"
+
+    first.touch()
+    second = next_enrollment_video_path(raw_videos_root=raw_root, sku="canA")
+    assert second.name == "canA_1.MOV"
+
+    (raw_root / "canA" / "canA_7.mp4").touch()
+    third = next_enrollment_video_path(raw_videos_root=raw_root, sku="canA")
+    assert third.name == "canA_8.MOV"
+
+
+def test_append_frames_to_existing_dataset_renumbers_frames(tmp_path: Path) -> None:
+    target_dir = tmp_path / "frames" / "target"
+    source_dir = tmp_path / "frames" / "source"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    (target_dir / "000001.jpg").write_bytes(b"a")
+    (target_dir / "000002.jpg").write_bytes(b"b")
+    (source_dir / "000001.jpg").write_bytes(b"c")
+    (source_dir / "000002.jpg").write_bytes(b"d")
+
+    moved = append_frames_to_existing_dataset(source_frames_dir=source_dir, target_frames_dir=target_dir)
+    assert [path.name for path in moved] == ["000003.jpg", "000004.jpg"]
+    assert sorted(path.name for path in target_dir.glob("*.jpg")) == [
+        "000001.jpg",
+        "000002.jpg",
+        "000003.jpg",
+        "000004.jpg",
+    ]
+    assert list(source_dir.glob("*.jpg")) == []
+
+
+def test_normalize_sku_name_rejects_invalid_value() -> None:
+    assert normalize_sku_name("  sku_1  ") == "sku_1"
+    try:
+        normalize_sku_name("bad sku")
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for invalid SKU name")
