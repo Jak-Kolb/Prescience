@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cv2
 import json
 import random
 import shutil
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import ultralytics
 from ultralytics import YOLO
 
 
@@ -21,6 +23,8 @@ class TrainConfig:
     patience: int | None = None
     freeze: int | None = None
     workers: int | None = None
+    resume: bool = False
+    resume_checkpoint: str | None = None
 
 
 def label_path_for_image(labels_dir: Path, image_path: Path) -> Path:
@@ -116,6 +120,100 @@ def choose_training_device() -> str:
     return "cpu"
 
 
+def get_ultralytics_version() -> str:
+    """Return installed ultralytics version string."""
+    return getattr(ultralytics, "__version__", "unknown")
+
+
+def _coerce_metric_value(value: object) -> float | int | str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            scalar = item()
+            if isinstance(scalar, (int, float)):
+                return scalar
+        except Exception:
+            pass
+    return str(value)
+
+
+def _write_quick_eval_artifacts(
+    *,
+    model: YOLO,
+    data_yaml: Path,
+    model_out_dir: Path,
+    imgsz: int,
+    conf: float,
+    device: str,
+) -> None:
+    """Run lightweight validation + save summary artifacts."""
+    eval_dir = model_out_dir / "eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_payload: dict[str, object] = {
+        "status": "ok",
+        "data_yaml": str(data_yaml),
+        "imgsz": imgsz,
+        "conf": conf,
+        "device": device,
+        "ultralytics_version": get_ultralytics_version(),
+    }
+
+    try:
+        metrics = model.val(data=str(data_yaml), imgsz=imgsz, device=device, verbose=False)
+        results_dict = getattr(metrics, "results_dict", {}) or {}
+        metrics_payload["metrics"] = {str(key): _coerce_metric_value(value) for key, value in results_dict.items()}
+    except Exception as exc:
+        metrics_payload["status"] = "error"
+        metrics_payload["error"] = str(exc)
+
+    # Save one sample prediction image from val split for quick visual regression checks.
+    try:
+        val_dir = data_yaml.parent / "images" / "val"
+        sample = None
+        for ext in ("*.jpg", "*.jpeg", "*.png"):
+            matches = sorted(val_dir.glob(ext))
+            if matches:
+                sample = matches[0]
+                break
+        if sample is not None:
+            preds = model.predict(source=str(sample), conf=conf, imgsz=imgsz, verbose=False)
+            if preds:
+                annotated = preds[0].plot()
+                cv2.imwrite(str(eval_dir / "example_pred.jpg"), annotated)
+                metrics_payload["example_pred_source"] = str(sample)
+    except Exception as exc:
+        metrics_payload["example_pred_error"] = str(exc)
+
+    (eval_dir / "metrics.json").write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+    summary_lines = [
+        "# Quick Eval Summary",
+        "",
+        f"- status: `{metrics_payload.get('status')}`",
+        f"- data: `{metrics_payload.get('data_yaml')}`",
+        f"- imgsz: `{metrics_payload.get('imgsz')}`",
+        f"- conf: `{metrics_payload.get('conf')}`",
+        f"- device: `{metrics_payload.get('device')}`",
+        f"- ultralytics: `{metrics_payload.get('ultralytics_version')}`",
+    ]
+    metrics = metrics_payload.get("metrics")
+    if isinstance(metrics, dict) and metrics:
+        summary_lines.extend(["", "## Metrics"])
+        for key in sorted(metrics.keys()):
+            summary_lines.append(f"- `{key}`: `{metrics[key]}`")
+    if "error" in metrics_payload:
+        summary_lines.extend(["", "## Eval Error", f"- `{metrics_payload['error']}`"])
+    if "example_pred_source" in metrics_payload:
+        summary_lines.extend(["", "## Example Prediction", f"- source: `{metrics_payload['example_pred_source']}`"])
+        summary_lines.append(f"- output: `{(eval_dir / 'example_pred.jpg')}`")
+
+    (eval_dir / "summary.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+
+
 def train_yolo_model(
     data_yaml: Path,
     model_out_dir: Path,
@@ -124,31 +222,35 @@ def train_yolo_model(
     """Train YOLO and return stable best.pt path."""
     model_out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = YOLO(config.base_model)
     device = choose_training_device()
-
-    train_kwargs = {
-        "data": str(data_yaml),
-        "epochs": config.epochs,
-        "imgsz": config.imgsz,
-        "conf": config.conf,
-        "device": device,
-        "project": str(model_out_dir),
-        "name": "train",
-        "exist_ok": True,
-        "verbose": False,
-        "plots": False,
-    }
-    if config.patience is not None:
-        train_kwargs["patience"] = int(config.patience)
-    if config.freeze is not None:
-        train_kwargs["freeze"] = int(config.freeze)
-    if config.workers is not None:
-        train_kwargs["workers"] = int(config.workers)
-
-    model.train(
-        **train_kwargs,
-    )
+    resume_checkpoint = Path(config.resume_checkpoint) if config.resume_checkpoint else None
+    can_resume = bool(config.resume and resume_checkpoint and resume_checkpoint.exists())
+    if can_resume:
+        model = YOLO(str(resume_checkpoint))
+        model.train(resume=True)
+    else:
+        model = YOLO(config.base_model)
+        train_kwargs = {
+            "data": str(data_yaml),
+            "epochs": config.epochs,
+            "imgsz": config.imgsz,
+            "conf": config.conf,
+            "device": device,
+            "project": str(model_out_dir),
+            "name": "train",
+            "exist_ok": True,
+            "verbose": False,
+            "plots": False,
+        }
+        if config.patience is not None:
+            train_kwargs["patience"] = int(config.patience)
+        if config.freeze is not None:
+            train_kwargs["freeze"] = int(config.freeze)
+        if config.workers is not None:
+            train_kwargs["workers"] = int(config.workers)
+        model.train(
+            **train_kwargs,
+        )
 
     save_dir = Path(model.trainer.save_dir)
     best_src = save_dir / "weights" / "best.pt"
@@ -166,11 +268,23 @@ def train_yolo_model(
         "patience": config.patience,
         "freeze": config.freeze,
         "workers": config.workers,
+        "resume": config.resume,
+        "resume_checkpoint": config.resume_checkpoint,
         "device": device,
+        "ultralytics_version": get_ultralytics_version(),
         "ultralytics_save_dir": str(save_dir),
         "best_path": str(best_dst),
     }
     with (model_out_dir / "train_meta.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    _write_quick_eval_artifacts(
+        model=model,
+        data_yaml=data_yaml,
+        model_out_dir=model_out_dir,
+        imgsz=config.imgsz,
+        conf=config.conf,
+        device=device,
+    )
 
     return best_dst

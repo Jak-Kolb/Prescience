@@ -30,7 +30,7 @@ MODE_PRESETS: dict[TrainingMode, ModePreset] = {
         epochs_stage2=12,
         epochs_detector=12,
         patience=4,
-        freeze=10,
+        freeze=5,
         dataset_scope="core_new",
         core_size=48,
     ),
@@ -55,6 +55,16 @@ MODE_PRESETS: dict[TrainingMode, ModePreset] = {
         core_size=48,
     ),
 }
+
+
+def clamp_epochs(value: int, *, lower: int = 6, upper: int = 20) -> int:
+    """Clamp epoch count to stable training bounds."""
+    return max(lower, min(upper, value))
+
+
+def dynamic_quick_epochs(new_count: int) -> int:
+    """Dynamic quick-iteration epochs based on number of new labels."""
+    return clamp_epochs(6 + (max(new_count, 0) // 4), lower=6, upper=20)
 
 
 def _validate_mode(value: str) -> TrainingMode:
@@ -158,4 +168,3 @@ def resolve_detector_training_config(
         freeze=int(freeze if freeze is not None else preset.freeze),
         workers=int(workers if workers is not None else default_workers_for_mode(resolved_mode)),
     )
-

@@ -50,7 +50,7 @@ def enroll_label(
     mode: str = typer.Option("quick", help="Training mode: quick|milestone|full"),
     dataset_scope: str | None = typer.Option(None, help="Dataset scope override: core_new|all"),
     core_size: int | None = typer.Option(None, help="Core set size for core_new scope"),
-    seed_per_bin: int = typer.Option(2, help="Manual seed labels per section"),
+    seed_per_bin: int = typer.Option(4, help="Manual seed labels per section"),
     approve_per_bin: int = typer.Option(5, help="Approval labels per section"),
     overwrite: bool = typer.Option(False, help="Relabel already-labeled frames"),
     allow_negatives: bool = typer.Option(True, help="Allow negative labels (empty txt)"),
@@ -61,6 +61,7 @@ def enroll_label(
     patience: int | None = typer.Option(None, help="Early stop patience override"),
     freeze: int | None = typer.Option(None, help="Frozen layers override"),
     workers: int | None = typer.Option(None, help="Dataloader workers override"),
+    resume: bool = typer.Option(False, help="Resume from latest last.pt when dataset signature matches"),
     version: int | None = typer.Option(None, help="Optional final model version number"),
 ) -> None:
     """Run guided onboarding labeling with model-in-the-loop approvals."""
@@ -82,6 +83,7 @@ def enroll_label(
         patience=patience,
         freeze=freeze,
         workers=workers,
+        resume=resume,
         version=version,
     )
 
@@ -118,6 +120,7 @@ def train_detector(
     patience: int | None = typer.Option(None, help="Early stop patience override"),
     freeze: int | None = typer.Option(None, help="Frozen layers override"),
     workers: int | None = typer.Option(None, help="Dataloader workers override"),
+    resume: bool = typer.Option(False, help="Resume from latest last.pt when dataset signature matches"),
     conf: float = typer.Option(0.35, help="Inference confidence default"),
     base_model: str = typer.Option("auto", help="Base model path or auto"),
 ) -> None:
@@ -135,6 +138,7 @@ def train_detector(
         patience=patience,
         freeze=freeze,
         workers=workers,
+        resume=resume,
         conf=conf,
         base_model=base_model,
     )

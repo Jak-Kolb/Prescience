@@ -73,6 +73,7 @@ prescience enroll label --sku can1_test
 ```
 
 Default mode is `quick` with `base_model=auto`, so retraining resumes from the latest prior SKU best model when available.
+Onboarding defaults now use `4` manual seed labels per bin (`24` total across 6 bins), and first-time SKU onboarding applies higher quick-mode epoch minimums for stage1/stage2.
 
 3. Train detector:
 
@@ -117,12 +118,13 @@ prescience run \
 - `quick` (default): low-latency iteration (`core_new` dataset scope, early stopping, partial freeze).
 - `milestone`: medium training pass on all labeled images.
 - `full`: longest/highest-quality pass on all labeled images.
+- `--resume` is supported for onboarding/detector training and only resumes when the train-state signature matches.
 
 Examples:
 
 ```bash
 # Quick iterative onboarding retrain from latest prior best model (auto)
-prescience enroll label --sku can1_test --mode quick --version 2
+prescience enroll label --sku can1_test --mode quick --version 2 --resume
 
 # Milestone detector retrain using all labeled images
 prescience train detector --sku can1_test --version v2 --mode milestone
@@ -143,6 +145,15 @@ Optional overrides on both onboarding and detector training:
 - `--patience <N>`
 - `--freeze <N>`
 - `--workers <N>`
+- `--resume`
+
+Quick mode epoch count is automatically adjusted from newly added label volume when you don't pass explicit `--epochs...`.
+
+Model folders now include quick evaluation artifacts after training:
+
+- `data/models/yolo/{sku}_{version}/eval/metrics.json`
+- `data/models/yolo/{sku}_{version}/eval/summary.md`
+- `data/models/yolo/{sku}_{version}/eval/example_pred.jpg` (best effort)
 
 ## Dashboard Video Upload
 
