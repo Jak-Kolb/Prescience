@@ -8,6 +8,7 @@ import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import torch
 import ultralytics
@@ -218,6 +219,7 @@ def train_yolo_model(
     data_yaml: Path,
     model_out_dir: Path,
     config: TrainConfig,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
 ) -> Path:
     """Train YOLO and return stable best.pt path."""
     model_out_dir.mkdir(parents=True, exist_ok=True)
@@ -227,9 +229,42 @@ def train_yolo_model(
     can_resume = bool(config.resume and resume_checkpoint and resume_checkpoint.exists())
     if can_resume:
         model = YOLO(str(resume_checkpoint))
+        if progress_cb is not None:
+            progress_cb({"status": "running", "stage": "train", "message": "Resuming training"})
         model.train(resume=True)
     else:
         model = YOLO(config.base_model)
+        if progress_cb is not None:
+            progress_cb(
+                {
+                    "status": "running",
+                    "stage": "train",
+                    "message": "Starting training",
+                    "epoch": 0,
+                    "total_epochs": int(config.epochs),
+                }
+            )
+
+        if progress_cb is not None:
+            def _emit_epoch_progress(trainer) -> None:
+                epoch_idx = int(getattr(trainer, "epoch", -1)) + 1
+                total_epochs = int(getattr(getattr(trainer, "args", object()), "epochs", config.epochs))
+                progress_cb(
+                    {
+                        "status": "running",
+                        "stage": "train",
+                        "epoch": epoch_idx,
+                        "total_epochs": total_epochs,
+                        "message": f"Epoch {epoch_idx}/{total_epochs}",
+                    }
+                )
+
+            for event_name in ("on_train_epoch_end", "on_fit_epoch_end"):
+                try:
+                    model.add_callback(event_name, _emit_epoch_progress)
+                except Exception:
+                    continue
+
         train_kwargs = {
             "data": str(data_yaml),
             "epochs": config.epochs,
@@ -251,6 +286,9 @@ def train_yolo_model(
         model.train(
             **train_kwargs,
         )
+
+    if progress_cb is not None:
+        progress_cb({"status": "running", "stage": "train", "message": "Finalizing model artifacts"})
 
     save_dir = Path(model.trainer.save_dir)
     best_src = save_dir / "weights" / "best.pt"
@@ -286,5 +324,7 @@ def train_yolo_model(
         conf=config.conf,
         device=device,
     )
+    if progress_cb is not None:
+        progress_cb({"status": "succeeded", "stage": "train", "message": "Training complete", "progress": 100.0})
 
     return best_dst

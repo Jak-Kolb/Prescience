@@ -7,7 +7,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -295,6 +295,7 @@ def train_detector_for_sku(
     conf: float = 0.35,
     base_model: str = "auto",
     resume: bool = False,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
 ) -> Path:
     """Train detector from current labeled frames with mode-aware dataset scope."""
     frames_dir = Path(f"data/derived/frames/{sku}/frames")
@@ -396,6 +397,7 @@ def train_detector_for_sku(
             resume=should_resume,
             resume_checkpoint=str(resume_checkpoint) if should_resume else None,
         ),
+        progress_cb=progress_cb,
     )
     updated_state = apply_training_state_update(
         train_state=train_state,
