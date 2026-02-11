@@ -28,6 +28,7 @@ def create_app(db_path: str | Path, config_path: str | Path) -> FastAPI:
         heartbeat_timeout_seconds=settings.cloud.heartbeat_timeout_seconds,
         pairing_required=settings.cloud.pairing.required,
     )
+    app.state.store.sync_skus_from_profiles(settings.profiles.root)
     app.state.stream_bus = SSEBroadcaster()
     app.state.templates = templates
 

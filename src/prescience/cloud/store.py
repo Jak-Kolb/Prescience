@@ -10,8 +10,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from prescience.cloud.db import connect, init_db
 from prescience.events.schemas import AlertEvent, CountEvent, EventBase, HeartbeatEvent, utc_now
+from prescience.profiles.schema import SKUProfile
 
 
 @dataclass
@@ -460,6 +463,61 @@ class CloudStore:
             }
         finally:
             conn.close()
+
+    def sync_skus_from_profiles(self, profiles_root: str | Path) -> dict[str, int]:
+        """Register missing SKUs from profile.json files under profiles root."""
+        root = Path(profiles_root)
+        if not root.exists():
+            return {"discovered": 0, "inserted": 0, "skipped_existing": 0, "invalid": 0}
+
+        existing = {item["sku_id"] for item in self.list_skus()}
+        discovered = 0
+        inserted = 0
+        skipped_existing = 0
+        invalid = 0
+
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+
+            profile_path = child / "profile.json"
+            if not profile_path.exists():
+                continue
+
+            discovered += 1
+            try:
+                payload = json.loads(profile_path.read_text(encoding="utf-8"))
+                profile = SKUProfile.model_validate(payload)
+            except (OSError, json.JSONDecodeError, ValidationError):
+                invalid += 1
+                continue
+
+            sku_id = profile.metadata.sku_id
+            if sku_id in existing:
+                skipped_existing += 1
+                continue
+
+            self.upsert_sku(
+                sku_id=sku_id,
+                name=profile.metadata.name,
+                profile_path=str(child),
+                threshold=float(profile.metadata.threshold),
+                metadata={
+                    "source": "profile_sync",
+                    "backbone": profile.metadata.model.backbone,
+                    "preprocess_version": profile.metadata.model.preprocess_version,
+                    "num_embeddings": profile.metadata.num_embeddings,
+                },
+            )
+            existing.add(sku_id)
+            inserted += 1
+
+        return {
+            "discovered": discovered,
+            "inserted": inserted,
+            "skipped_existing": skipped_existing,
+            "invalid": invalid,
+        }
 
     def get_device_config(self, device_id: str) -> dict[str, Any]:
         """Return device config + active SKU metadata."""

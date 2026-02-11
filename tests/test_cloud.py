@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -111,3 +112,40 @@ def test_device_config_returns_skus(tmp_path: Path) -> None:
 
     assert cfg["device_id"] == "device-10"
     assert cfg["active_skus"][0]["sku_id"] == "sku-a"
+
+
+def test_sync_skus_from_profiles_registers_missing_profile(tmp_path: Path) -> None:
+    store = CloudStore(db_path=tmp_path / "cloud.db", heartbeat_timeout_seconds=90, pairing_required=False)
+
+    profile_dir = tmp_path / "profiles" / "can1_test"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_payload = {
+        "version": "1",
+        "embeddings_file": "embeddings.npy",
+        "metadata": {
+            "sku_id": "can1_test",
+            "name": "Can 1 Test",
+            "threshold": 0.72,
+            "created_at": utc_now().isoformat(),
+            "model": {
+                "backbone": "resnet18",
+                "preprocess_version": "v1",
+                "embedding_dim": 512,
+            },
+            "num_embeddings": 20,
+        },
+    }
+    (profile_dir / "profile.json").write_text(json.dumps(profile_payload), encoding="utf-8")
+
+    result = store.sync_skus_from_profiles(tmp_path / "profiles")
+    assert result["discovered"] == 1
+    assert result["inserted"] == 1
+    assert result["skipped_existing"] == 0
+    assert result["invalid"] == 0
+
+    skus = store.list_skus()
+    assert len(skus) == 1
+    assert skus[0]["sku_id"] == "can1_test"
+    assert skus[0]["name"] == "Can 1 Test"
+    assert skus[0]["profile_path"] == str(profile_dir)
+    assert skus[0]["threshold"] == 0.72
