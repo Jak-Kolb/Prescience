@@ -26,6 +26,34 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+## Web-First Workflow
+
+Start cloud UI:
+
+```bash
+prescience cloud serve --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` and use:
+
+1. **New SKU Enrollment**:
+- Upload first video (`{sku}_0.MOV` is auto-assigned).
+- System auto-runs extraction and opens onboarding wizard.
+- Wizard supports browser box drawing (multi-box), negatives, and staged training progress.
+
+2. **Add Video + Quick Train** (existing SKU):
+- Upload append video (`{sku}_1.MOV`, `{sku}_2.MOV`, ...).
+- System auto-extracts with append mode and launches quick retraining wizard.
+
+3. **Full Train**:
+- Enabled after SKU has at least `v1` and `v2` stable models.
+- Runs full training on all labeled images and creates next version.
+
+4. **Define Zone + Run Tracking**:
+- Define per-line polygon + direction in browser.
+- Start tracking in browser and view live MJPEG annotated stream.
+- Runtime still emits normal COUNT/HEARTBEAT/ALERT events.
+
 ## CLI
 
 ```bash

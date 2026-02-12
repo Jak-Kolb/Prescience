@@ -1,0 +1,286 @@
+:root {
+  --bg: #eef2f6;
+  --card: #ffffff;
+  --ink: #1a2430;
+  --muted: #5f6e7d;
+  --accent: #0057b8;
+  --danger: #b42318;
+  --line: #d9e1ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top right, #dbe8f7 0%, #eef2f6 55%, #f7f9fb 100%);
+  color: var(--ink);
+}
+
+.container {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px;
+}
+
+.container.wide {
+  max-width: 1560px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.topbar h1 {
+  margin: 0;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid #e4ebf2;
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 4px 20px rgba(26, 36, 48, 0.08);
+}
+
+.metric .label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metric .value {
+  margin-top: 4px;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.metric .value.small {
+  font-size: 20px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.sku-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.sku-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.sku-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pill {
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--muted);
+}
+
+.stack-form,
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stack-form {
+  flex-direction: column;
+}
+
+.inline-form,
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+input,
+select,
+button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  background: #fff;
+}
+
+button,
+.button {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+button.ghost,
+.button.ghost {
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+code {
+  background: #edf3f8;
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+
+.job-list {
+  max-height: 280px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.job-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.session-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.ok {
+  color: #0a7f3f;
+}
+
+.warn {
+  color: #cc6b00;
+}
+
+.canvas-wrap {
+  width: 100%;
+  max-height: 560px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+.progress {
+  width: 100%;
+  height: 10px;
+  background: #ebf0f5;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+#training-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+}
+
+.stream-wrap {
+  margin-top: 10px;
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.stream-wrap img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.tracking-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(840px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.stream-wrap.large {
+  margin-top: 0;
+  min-height: min(78vh, 980px);
+}
+
+.stream-wrap.large img {
+  width: 100%;
+  height: min(78vh, 980px);
+  object-fit: contain;
+  background: #0b1118;
+}
+
+@media (max-width: 1200px) {
+  .tracking-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .stream-wrap.large {
+    min-height: 420px;
+  }
+
+  .stream-wrap.large img {
+    height: auto;
+    max-height: 70vh;
+  }
+}

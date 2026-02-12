@@ -14,9 +14,9 @@ class YoloTracker:
     def __init__(
         self,
         model_path: str,
-        conf: float = 0.35,
+        conf: float = 0.01,
         classes: list[int] | None = None,
-        tracker_cfg: str = "bytetrack.yaml",
+        tracker_cfg: str = "configs/bytetrack_low_conf.yaml",
     ):
         self.conf = conf
         self.classes = classes

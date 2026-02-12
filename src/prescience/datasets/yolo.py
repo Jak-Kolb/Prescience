@@ -5,9 +5,11 @@ from __future__ import annotations
 import cv2
 import json
 import random
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import torch
 import ultralytics
@@ -141,16 +143,105 @@ def _coerce_metric_value(value: object) -> float | int | str | None:
     return str(value)
 
 
+def _extract_key_metric(metrics: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = metrics.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _evaluate_model_summary(
+    *,
+    model_path: str,
+    data_yaml: Path,
+    imgsz: int,
+    conf: float,
+    device: str,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": "ok",
+        "model_path": model_path,
+        "imgsz": imgsz,
+        "conf": conf,
+        "device": device,
+    }
+    try:
+        model = YOLO(model_path)
+        metrics = model.val(data=str(data_yaml), imgsz=imgsz, device=device, verbose=False)
+        results_dict = getattr(metrics, "results_dict", {}) or {}
+        summary["metrics"] = {str(key): _coerce_metric_value(value) for key, value in results_dict.items()}
+    except Exception as exc:  # noqa: BLE001
+        summary["status"] = "error"
+        summary["error"] = str(exc)
+        summary["metrics"] = {}
+    return summary
+
+
+def _model_score(summary: dict[str, Any]) -> float | None:
+    metrics = summary.get("metrics", {})
+    if not isinstance(metrics, dict):
+        return None
+    score = _extract_key_metric(
+        metrics,
+        keys=(
+            "metrics/mAP50-95(B)",
+            "metrics/mAP50-95(M)",
+            "metrics/mAP50-95(P)",
+            "metrics/mAP50(B)",
+            "metrics/mAP50(M)",
+            "metrics/mAP50(P)",
+        ),
+    )
+    return score
+
+
+def _stable_model_tag(model_out_dir: Path) -> tuple[str, int] | None:
+    match = re.match(r"^(.+)_v(\d+)$", model_out_dir.name)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2))
+
+
+def _prune_older_model_versions(model_out_dir: Path) -> list[str]:
+    tag = _stable_model_tag(model_out_dir)
+    if tag is None:
+        return []
+    sku, keep_version = tag
+    model_root = model_out_dir.parent
+    pattern = re.compile(rf"^{re.escape(sku)}_v(\d+)$")
+    deleted: list[str] = []
+    for child in sorted(model_root.iterdir()):
+        if not child.is_dir():
+            continue
+        match = pattern.match(child.name)
+        if match is None:
+            continue
+        version = int(match.group(1))
+        if version >= keep_version:
+            continue
+        if child.resolve() == model_out_dir.resolve():
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        deleted.append(str(child))
+    return deleted
+
+
 def _write_quick_eval_artifacts(
     *,
-    model: YOLO,
+    best_model_path: Path,
+    old_model_path: str | None,
     data_yaml: Path,
     model_out_dir: Path,
     imgsz: int,
     conf: float,
     device: str,
 ) -> None:
-    """Run lightweight validation + save summary artifacts."""
+    """Run comparison eval (old vs new) and persist summary artifacts."""
     eval_dir = model_out_dir / "eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -161,18 +252,52 @@ def _write_quick_eval_artifacts(
         "conf": conf,
         "device": device,
         "ultralytics_version": get_ultralytics_version(),
+        "old_model": None,
+        "new_model": None,
     }
 
-    try:
-        metrics = model.val(data=str(data_yaml), imgsz=imgsz, device=device, verbose=False)
-        results_dict = getattr(metrics, "results_dict", {}) or {}
-        metrics_payload["metrics"] = {str(key): _coerce_metric_value(value) for key, value in results_dict.items()}
-    except Exception as exc:
-        metrics_payload["status"] = "error"
-        metrics_payload["error"] = str(exc)
+    old_summary: dict[str, Any] | None = None
+    if old_model_path and Path(old_model_path).exists():
+        print(f"[eval] Old model summary ({old_model_path})")
+        old_summary = _evaluate_model_summary(
+            model_path=old_model_path,
+            data_yaml=data_yaml,
+            imgsz=imgsz,
+            conf=conf,
+            device=device,
+        )
+        metrics_payload["old_model"] = old_summary
+
+    print(f"[eval] New model summary ({best_model_path})")
+    new_summary = _evaluate_model_summary(
+        model_path=str(best_model_path),
+        data_yaml=data_yaml,
+        imgsz=imgsz,
+        conf=conf,
+        device=device,
+    )
+    metrics_payload["new_model"] = new_summary
+
+    old_score = _model_score(old_summary) if old_summary is not None else None
+    new_score = _model_score(new_summary)
+    comparison: dict[str, Any] = {
+        "metric": "mAP50-95 (fallback mAP50)",
+        "old_score": old_score,
+        "new_score": new_score,
+        "improved": False,
+        "deleted_old_models": [],
+    }
+    if old_score is not None and new_score is not None and new_score > old_score:
+        deleted = _prune_older_model_versions(model_out_dir)
+        comparison["improved"] = True
+        comparison["deleted_old_models"] = deleted
+        if deleted:
+            print(f"[eval] New model is better. Deleted old model dirs: {deleted}")
+    metrics_payload["comparison"] = comparison
 
     # Save one sample prediction image from val split for quick visual regression checks.
     try:
+        model = YOLO(str(best_model_path))
         val_dir = data_yaml.parent / "images" / "val"
         sample = None
         for ext in ("*.jpg", "*.jpeg", "*.png"):
@@ -191,7 +316,7 @@ def _write_quick_eval_artifacts(
 
     (eval_dir / "metrics.json").write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
     summary_lines = [
-        "# Quick Eval Summary",
+        "# Model Comparison Summary",
         "",
         f"- status: `{metrics_payload.get('status')}`",
         f"- data: `{metrics_payload.get('data_yaml')}`",
@@ -200,13 +325,35 @@ def _write_quick_eval_artifacts(
         f"- device: `{metrics_payload.get('device')}`",
         f"- ultralytics: `{metrics_payload.get('ultralytics_version')}`",
     ]
-    metrics = metrics_payload.get("metrics")
-    if isinstance(metrics, dict) and metrics:
-        summary_lines.extend(["", "## Metrics"])
-        for key in sorted(metrics.keys()):
-            summary_lines.append(f"- `{key}`: `{metrics[key]}`")
-    if "error" in metrics_payload:
-        summary_lines.extend(["", "## Eval Error", f"- `{metrics_payload['error']}`"])
+
+    old_model = metrics_payload.get("old_model")
+    if isinstance(old_model, dict) and old_model:
+        summary_lines.extend(["", "## Old Model"])
+        summary_lines.append(f"- path: `{old_model.get('model_path')}`")
+        old_metrics = old_model.get("metrics")
+        if isinstance(old_metrics, dict):
+            for key in sorted(old_metrics.keys()):
+                summary_lines.append(f"- `{key}`: `{old_metrics[key]}`")
+
+    new_model = metrics_payload.get("new_model")
+    if isinstance(new_model, dict) and new_model:
+        summary_lines.extend(["", "## New Model"])
+        summary_lines.append(f"- path: `{new_model.get('model_path')}`")
+        new_metrics = new_model.get("metrics")
+        if isinstance(new_metrics, dict):
+            for key in sorted(new_metrics.keys()):
+                summary_lines.append(f"- `{key}`: `{new_metrics[key]}`")
+
+    compare = metrics_payload.get("comparison")
+    if isinstance(compare, dict):
+        summary_lines.extend(["", "## Decision"])
+        summary_lines.append(f"- improved: `{compare.get('improved')}`")
+        summary_lines.append(f"- old_score: `{compare.get('old_score')}`")
+        summary_lines.append(f"- new_score: `{compare.get('new_score')}`")
+        deleted_dirs = compare.get("deleted_old_models", [])
+        if isinstance(deleted_dirs, list) and deleted_dirs:
+            summary_lines.append(f"- deleted_old_models: `{deleted_dirs}`")
+
     if "example_pred_source" in metrics_payload:
         summary_lines.extend(["", "## Example Prediction", f"- source: `{metrics_payload['example_pred_source']}`"])
         summary_lines.append(f"- output: `{(eval_dir / 'example_pred.jpg')}`")
@@ -218,6 +365,7 @@ def train_yolo_model(
     data_yaml: Path,
     model_out_dir: Path,
     config: TrainConfig,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
 ) -> Path:
     """Train YOLO and return stable best.pt path."""
     model_out_dir.mkdir(parents=True, exist_ok=True)
@@ -227,9 +375,42 @@ def train_yolo_model(
     can_resume = bool(config.resume and resume_checkpoint and resume_checkpoint.exists())
     if can_resume:
         model = YOLO(str(resume_checkpoint))
+        if progress_cb is not None:
+            progress_cb({"status": "running", "stage": "train", "message": "Resuming training"})
         model.train(resume=True)
     else:
         model = YOLO(config.base_model)
+        if progress_cb is not None:
+            progress_cb(
+                {
+                    "status": "running",
+                    "stage": "train",
+                    "message": "Starting training",
+                    "epoch": 0,
+                    "total_epochs": int(config.epochs),
+                }
+            )
+
+        if progress_cb is not None:
+            def _emit_epoch_progress(trainer) -> None:
+                epoch_idx = int(getattr(trainer, "epoch", -1)) + 1
+                total_epochs = int(getattr(getattr(trainer, "args", object()), "epochs", config.epochs))
+                progress_cb(
+                    {
+                        "status": "running",
+                        "stage": "train",
+                        "epoch": epoch_idx,
+                        "total_epochs": total_epochs,
+                        "message": f"Epoch {epoch_idx}/{total_epochs}",
+                    }
+                )
+
+            for event_name in ("on_train_epoch_end", "on_fit_epoch_end"):
+                try:
+                    model.add_callback(event_name, _emit_epoch_progress)
+                except Exception:
+                    continue
+
         train_kwargs = {
             "data": str(data_yaml),
             "epochs": config.epochs,
@@ -251,6 +432,9 @@ def train_yolo_model(
         model.train(
             **train_kwargs,
         )
+
+    if progress_cb is not None:
+        progress_cb({"status": "running", "stage": "train", "message": "Finalizing model artifacts"})
 
     save_dir = Path(model.trainer.save_dir)
     best_src = save_dir / "weights" / "best.pt"
@@ -279,12 +463,15 @@ def train_yolo_model(
         json.dump(meta, f, indent=2)
 
     _write_quick_eval_artifacts(
-        model=model,
+        best_model_path=best_dst,
+        old_model_path=config.base_model,
         data_yaml=data_yaml,
         model_out_dir=model_out_dir,
         imgsz=config.imgsz,
         conf=config.conf,
         device=device,
     )
+    if progress_cb is not None:
+        progress_cb({"status": "succeeded", "stage": "train", "message": "Training complete", "progress": 100.0})
 
     return best_dst

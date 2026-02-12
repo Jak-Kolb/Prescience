@@ -58,6 +58,21 @@ def test_wrong_direction_does_not_count() -> None:
     assert counter.total_count == 0
 
 
+def test_in_and_out_counts_on_zone_exit_regardless_of_axis() -> None:
+    counter = ZoneCrossCounter(
+        polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
+        direction="in_and_out",
+        min_separation_seconds=0.1,
+        track_cooldown_seconds=0.1,
+        max_track_idle_frames=30,
+    )
+
+    counter.update([td(8, (150, 130, 190, 170))], frame_idx=1, now_seconds=0.0)
+    decisions = counter.update([td(8, (70, 130, 95, 170))], frame_idx=2, now_seconds=1.0)
+    assert len(decisions) == 1
+    assert counter.total_count == 1
+
+
 def test_track_oscillation_does_not_double_count() -> None:
     counter = ZoneCrossCounter(
         polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
@@ -90,6 +105,82 @@ def test_min_separation_suppresses_burst_counts() -> None:
     assert counter.total_count == 1
 
     counter.update([td(2, (210, 140, 250, 180))], frame_idx=3, now_seconds=1.2)
+    assert counter.total_count == 1
+
+
+def test_counts_when_tracker_id_switches_mid_path() -> None:
+    counter = ZoneCrossCounter(
+        polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
+        direction="left_to_right",
+        min_separation_seconds=0.1,
+        track_cooldown_seconds=0.1,
+        max_track_idle_frames=30,
+    )
+
+    counter.update([td(1, (130, 120, 170, 160))], frame_idx=1, now_seconds=0.0)
+    decisions = counter.update([td(99, (210, 120, 250, 160))], frame_idx=2, now_seconds=1.0)
+    assert len(decisions) == 1
+    assert counter.total_count == 1
+
+
+def test_counts_when_tracker_id_missing_but_motion_is_consistent() -> None:
+    counter = ZoneCrossCounter(
+        polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
+        direction="left_to_right",
+        min_separation_seconds=0.1,
+        track_cooldown_seconds=0.1,
+        max_track_idle_frames=30,
+    )
+
+    inside = TrackedDetection(
+        box=(130, 120, 170, 160),
+        confidence=0.9,
+        class_id=0,
+        class_name="product",
+        track_id=None,
+    )
+    outside = TrackedDetection(
+        box=(210, 120, 250, 160),
+        confidence=0.9,
+        class_id=0,
+        class_name="product",
+        track_id=None,
+    )
+
+    counter.update([inside], frame_idx=1, now_seconds=0.0)
+    decisions = counter.update([outside], frame_idx=2, now_seconds=1.0)
+    assert len(decisions) == 1
+    assert counter.total_count == 1
+
+
+def test_left_to_right_counts_on_right_edge_cross_even_if_centroid_still_inside() -> None:
+    counter = ZoneCrossCounter(
+        polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
+        direction="left_to_right",
+        min_separation_seconds=0.1,
+        track_cooldown_seconds=0.1,
+        max_track_idle_frames=30,
+    )
+
+    counter.update([td(3, (140, 120, 180, 160))], frame_idx=1, now_seconds=0.0)
+    # Right edge crosses zone boundary while centroid can still be inside.
+    decisions = counter.update([td(3, (170, 120, 210, 160))], frame_idx=2, now_seconds=1.0)
+    assert len(decisions) == 1
+    assert counter.total_count == 1
+
+
+def test_in_and_out_counts_when_any_edge_crosses_zone_boundary() -> None:
+    counter = ZoneCrossCounter(
+        polygon=[(100, 100), (200, 100), (200, 200), (100, 200)],
+        direction="in_and_out",
+        min_separation_seconds=0.1,
+        track_cooldown_seconds=0.1,
+        max_track_idle_frames=30,
+    )
+
+    counter.update([td(4, (120, 120, 160, 160))], frame_idx=1, now_seconds=0.0)
+    decisions = counter.update([td(4, (90, 120, 130, 160))], frame_idx=2, now_seconds=1.0)
+    assert len(decisions) == 1
     assert counter.total_count == 1
 
 

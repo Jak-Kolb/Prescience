@@ -31,9 +31,9 @@ class CountingSettings(BaseModel):
 
 
 class TrackerSettings(BaseModel):
-    conf: float = 0.35
+    conf: float = 0.01
     classes: list[int] = Field(default_factory=list)
-    tracker_cfg: str = "bytetrack.yaml"
+    tracker_cfg: str = "configs/bytetrack_low_conf.yaml"
 
 
 class QualitySettings(BaseModel):
@@ -95,7 +95,8 @@ def parse_source(source: str | int) -> str | int:
     """Convert numeric string camera ids to int for OpenCV."""
     if isinstance(source, int):
         return source
-    return int(source) if source.isdigit() else source
+    normalized = source.strip()
+    return int(normalized) if normalized.isdigit() else normalized
 
 
 def load_settings(config_path: str | Path | None = None) -> AppSettings:
