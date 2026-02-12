@@ -51,6 +51,8 @@ class TrackingSession:
     zone_config_path: Path
     config_path: Path
     event_endpoint: str | None
+    tracker_conf: float | None = None
+    direction_override: str | None = None
     run_id: str | None = None
     status: str = "idle"
     message: str = ""
@@ -94,6 +96,8 @@ class TrackingSession:
             "line_id": self.line_id,
             "device_id": self.device_id,
             "model_path": self.model_path,
+            "tracker_conf": self.tracker_conf,
+            "direction": self.direction_override,
             "status": self.status,
             "message": self.message,
             "started_at": self.started_at,
@@ -115,10 +119,12 @@ class TrackingSession:
     def _run_loop(self) -> None:
         settings = load_settings(self.config_path)
         polygon, direction = _load_zone_from_yaml(self.zone_config_path, settings)
+        if self.direction_override:
+            direction = self.direction_override
 
         tracker = YoloTracker(
             model_path=self.model_path,
-            conf=settings.tracker.conf,
+            conf=(self.tracker_conf if self.tracker_conf is not None else settings.tracker.conf),
             classes=settings.tracker.classes or None,
             tracker_cfg=settings.tracker.tracker_cfg,
         )
@@ -246,7 +252,13 @@ class TrackingSession:
                     )
                     last_heartbeat = now_s
 
-                annotated = draw_zone_overlay(frame, polygon)
+                annotated = frame.copy()
+                draw_zone_overlay(
+                    annotated,
+                    polygon=polygon,
+                    direction=direction,
+                    total_count=counter.total_count,
+                )
                 for tracked_det in tracked:
                     x1, y1, x2, y2 = tracked_det.box
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 170, 255), 2)
@@ -300,6 +312,8 @@ class TrackingSessionManager:
         zone_config_path: Path,
         config_path: Path,
         event_endpoint: str | None,
+        tracker_conf: float | None = None,
+        direction_override: str | None = None,
         run_id: str | None = None,
     ) -> TrackingSession:
         session_id = str(uuid4())
@@ -313,6 +327,8 @@ class TrackingSessionManager:
             zone_config_path=zone_config_path,
             config_path=config_path,
             event_endpoint=event_endpoint,
+            tracker_conf=tracker_conf,
+            direction_override=direction_override,
             run_id=run_id,
         )
         with self._lock:

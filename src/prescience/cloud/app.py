@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
@@ -27,6 +28,7 @@ def create_app(db_path: str | Path, config_path: str | Path) -> FastAPI:
 
     app = FastAPI(title="Prescience Cloud", version="0.1.0")
     templates = Jinja2Templates(directory=str(templates_dir))
+    app.state.asset_version = str(int(time.time()))
 
     app.state.settings = settings
     app.state.store = CloudStore(
@@ -60,7 +62,7 @@ def create_app(db_path: str | Path, config_path: str | Path) -> FastAPI:
             versions = store.list_model_versions_for_sku(sku["sku_id"])
             sku["model_versions"] = versions
             sku["latest_version"] = f"v{versions[-1]}" if versions else None
-            sku["full_train_ready"] = len(versions) >= 2
+            sku["full_train_ready"] = store.sku_full_train_ready(sku["sku_id"])
 
         return templates.TemplateResponse(
             request=request,
@@ -72,6 +74,7 @@ def create_app(db_path: str | Path, config_path: str | Path) -> FastAPI:
                 "skus": skus,
                 "sessions": sessions,
                 "pairing_required": settings.cloud.pairing.required,
+                "asset_version": app.state.asset_version,
             },
         )
 

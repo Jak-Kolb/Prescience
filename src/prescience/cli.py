@@ -121,7 +121,7 @@ def train_detector(
     freeze: int | None = typer.Option(None, help="Frozen layers override"),
     workers: int | None = typer.Option(None, help="Dataloader workers override"),
     resume: bool = typer.Option(False, help="Resume from latest last.pt when dataset signature matches"),
-    conf: float = typer.Option(0.35, help="Inference confidence default"),
+    conf: float = typer.Option(0.01, help="Training/eval confidence threshold"),
     base_model: str = typer.Option("auto", help="Base model path or auto"),
 ) -> None:
     """Train a SKU-specific detector from verified labels."""

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Prescience Dashboard</title>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <link rel="stylesheet" href="/static/ui.css" />
+    <link rel="stylesheet" href="/static/ui.css?v={{ asset_version }}" />
   </head>
   <body>
     <main class="container">
@@ -85,7 +85,18 @@
                   >
                     Full Train
                   </button>
-                  <a class="button ghost" href="/ui/tracking?sku_id={{ sku.sku_id }}&line_id={{ line_id }}">Define Zone + Run Tracking</a>
+                  <a
+                    class="button ghost"
+                    href="/ui/zone?sku_id={{ sku.sku_id }}&line_id={{ line_id }}"
+                  >
+                    Define Zone
+                  </a>
+                  <a
+                    class="button ghost"
+                    href="/ui/tracking?sku_id={{ sku.sku_id }}&line_id={{ line_id }}"
+                  >
+                    Run Tracking
+                  </a>
                 </div>
 
                 <form
@@ -142,7 +153,7 @@
       </section>
     </main>
 
-    <script src="/static/ui.js"></script>
+    <script src="/static/ui.js?v={{ asset_version }}"></script>
     <script>
       window.PRESCIENCE_BOOTSTRAP = {
         lineId: {{ line_id | tojson }},

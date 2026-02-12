@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 import cv2
 import numpy as np
@@ -128,3 +129,110 @@ def test_train_stage2_updates_manifest_and_stable_path(tmp_path: Path, monkeypat
 
     manifest = Path(f"data/derived/labels/{sku}/manifest.json").read_text(encoding="utf-8")
     assert "\"model_version\": \"v1\"" in manifest
+
+
+def test_prepare_approval_candidates_uses_only_current_append_video_batch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sku = "can1_test"
+    frames = Path(f"data/derived/frames/{sku}/frames")
+    for idx in range(1, 7):
+        _write_frame(frames / f"{idx:06d}.jpg")
+
+    meta = {
+        "sku": sku,
+        "append_mode": True,
+        "append_history": [
+            {
+                "video_path": f"data/raw/videos/{sku}/{sku}_1.MOV",
+                "new_files": ["000001.jpg", "000002.jpg", "000003.jpg"],
+            },
+            {
+                "video_path": f"data/raw/videos/{sku}/{sku}_2.MOV",
+                "new_files": ["000004.jpg", "000005.jpg", "000006.jpg"],
+            },
+        ],
+    }
+    (frames.parent / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    class FakeBoxes:
+        def __init__(self):
+            self.xyxy = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.array([[5, 5, 50, 60]])))
+            self.conf = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.array([0.8])))
+
+        def __len__(self):
+            return 1
+
+    class FakeResult:
+        boxes = FakeBoxes()
+
+    class FakeYOLO:
+        def __init__(self, _path: str):
+            pass
+
+        def predict(self, **_kwargs):
+            return [FakeResult()]
+
+    monkeypatch.setattr(web, "YOLO", FakeYOLO)
+    candidates = web.prepare_approval_candidates(
+        sku=sku,
+        stage1_model_path="fake-stage1.pt",
+        approve_per_section=10,
+        sections=1,
+        append_video_path=f"data/raw/videos/{sku}/{sku}_2.MOV",
+    )
+    names = sorted(item["frame_name"] for item in candidates)
+    assert names == ["000004.jpg", "000005.jpg", "000006.jpg"]
+
+
+def test_prepare_approval_candidates_from_append_batch_yields_full_target_count(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sku = "can1_test"
+    frames = Path(f"data/derived/frames/{sku}/frames")
+    for idx in range(1, 181):
+        _write_frame(frames / f"{idx:06d}.jpg")
+
+    latest_video = f"data/raw/videos/{sku}/{sku}_2.MOV"
+    meta = {
+        "sku": sku,
+        "append_mode": True,
+        "append_history": [
+            {
+                "video_path": f"data/raw/videos/{sku}/{sku}_1.MOV",
+                "new_files": [f"{idx:06d}.jpg" for idx in range(121, 151)],
+            },
+            {
+                "video_path": latest_video,
+                "new_files": [f"{idx:06d}.jpg" for idx in range(151, 181)],
+            },
+        ],
+    }
+    (frames.parent / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    class FakeBoxes:
+        def __init__(self):
+            self.xyxy = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.array([[5, 5, 50, 60]])))
+            self.conf = SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.array([0.8])))
+
+        def __len__(self):
+            return 1
+
+    class FakeResult:
+        boxes = FakeBoxes()
+
+    class FakeYOLO:
+        def __init__(self, _path: str):
+            pass
+
+        def predict(self, **_kwargs):
+            return [FakeResult()]
+
+    monkeypatch.setattr(web, "YOLO", FakeYOLO)
+    candidates = web.prepare_approval_candidates(
+        sku=sku,
+        stage1_model_path="fake-stage1.pt",
+        approve_per_section=5,
+        sections=6,
+        append_video_path=latest_video,
+    )
+    assert len(candidates) == 30
+    assert all("000151.jpg" <= item["frame_name"] <= "000180.jpg" for item in candidates)

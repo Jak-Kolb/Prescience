@@ -53,7 +53,7 @@ class OnboardingParams:
     dataset_scope: str | None = None
     core_size: int | None = None
     imgsz: int | None = None
-    conf_propose: float = 0.10
+    conf_propose: float = 0.03
     epochs_stage1: int | None = None
     retrain_after_approve: bool = True
     epochs_stage2: int | None = None
@@ -420,17 +420,18 @@ def _append_history_new_files(frames_dir: Path) -> set[str]:
     if not isinstance(history, list):
         return set()
 
-    out: set[str] = set()
-    for item in history:
+    # Focus only on the most recent append batch so each retrain round
+    # reviews frames from the newest video, not all historical appends.
+    for item in reversed(history):
         if not isinstance(item, dict):
             continue
         files = item.get("new_files")
         if not isinstance(files, list):
             continue
-        for value in files:
-            if isinstance(value, str):
-                out.add(value)
-    return out
+        selected = {value for value in files if isinstance(value, str)}
+        if selected:
+            return selected
+    return set()
 
 
 def _select_processable_image_names(
@@ -487,8 +488,6 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
     _sync_manifest_from_existing_labels(manifest, params.labels_dir, images)
     save_manifest(manifest_path, manifest)
 
-    sections = _split_into_sections(images, params.sections)
-
     processable_names = {
         image.name
         for image in images
@@ -502,6 +501,8 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
     )
     if selectable != processable_names:
         print(f"Focusing onboarding candidates on appended unlabeled frames ({len(selectable)} images).")
+    section_source = [image for image in images if image.name in selectable] or images
+    sections = _split_into_sections(section_source, params.sections)
 
     stage1_candidates: list[Path] = []
     for section in sections:
@@ -549,8 +550,8 @@ def run_onboarding_labeling(params: OnboardingParams) -> None:
     effective_epochs_stage1 = resolved.epochs_stage1
     if resolved.mode == "quick" and params.epochs_stage1 is None:
         effective_epochs_stage1 = max(6, dynamic_quick_epochs(new_count_stage1) - 2)
-        if is_first_enrollment:
-            effective_epochs_stage1 = max(effective_epochs_stage1, 12)
+    if is_first_enrollment:
+        effective_epochs_stage1 = max(effective_epochs_stage1, 20)
     effective_freeze_stage1 = resolved.freeze
     if resolved.mode == "quick" and params.freeze is None and new_count_stage1 >= 12:
         effective_freeze_stage1 = 0

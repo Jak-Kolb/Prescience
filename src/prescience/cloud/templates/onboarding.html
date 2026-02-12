@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Onboarding {{ session.sku_id }}</title>
-    <link rel="stylesheet" href="/static/ui.css" />
+    <link rel="stylesheet" href="/static/ui.css?v={{ asset_version }}" />
   </head>
   <body>
     <main class="container">
@@ -66,6 +66,7 @@
             <button id="seed-complete">Start Stage1 Training</button>
             <button id="approval-complete">Start Stage2 Training</button>
           </div>
+          <div id="approval-gate" class="muted"></div>
           <div id="job-feed" class="job-list"></div>
         </article>
       </section>
@@ -78,6 +79,6 @@
         summary: {{ summary | tojson }},
       };
     </script>
-    <script src="/static/onboarding.js"></script>
+    <script src="/static/onboarding.js?v={{ asset_version }}"></script>
   </body>
 </html>

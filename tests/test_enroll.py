@@ -93,7 +93,7 @@ def test_normalize_sku_name_rejects_invalid_value() -> None:
     raise AssertionError("Expected ValueError for invalid SKU name")
 
 
-def test_select_processable_image_names_prefers_append_history(tmp_path: Path) -> None:
+def test_select_processable_image_names_prefers_latest_append_batch(tmp_path: Path) -> None:
     frames_dir = tmp_path / "derived" / "frames" / "can1_test" / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +119,7 @@ def test_select_processable_image_names_prefers_append_history(tmp_path: Path) -
         frames_dir=frames_dir,
         overwrite=False,
     )
-    assert selected == {"000002.jpg", "000003.jpg"}
+    assert selected == {"000003.jpg"}
 
 
 def test_select_processable_image_names_overwrite_uses_all(tmp_path: Path) -> None:

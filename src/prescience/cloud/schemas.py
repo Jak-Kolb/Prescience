@@ -53,5 +53,7 @@ class TrackingStartRequest(BaseModel):
     device_id: str = "device-1"
     sku_id: str
     model_path: str | None = None
+    conf: float | None = Field(default=None, ge=0.0, le=1.0)
+    direction: str | None = None
     run_id: str | None = None
     event_endpoint: str | None = None

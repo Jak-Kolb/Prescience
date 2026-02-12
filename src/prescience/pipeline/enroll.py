@@ -292,7 +292,7 @@ def train_detector_for_sku(
     patience: int | None = None,
     freeze: int | None = None,
     workers: int | None = None,
-    conf: float = 0.35,
+    conf: float = 0.01,
     base_model: str = "auto",
     resume: bool = False,
     progress_cb: Callable[[dict[str, Any]], None] | None = None,

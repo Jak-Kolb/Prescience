@@ -11,7 +11,7 @@ from typing import Any
 import cv2
 import yaml
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 
 from prescience.cloud.jobs import UIJobRunner
 from prescience.cloud.schemas import (
@@ -26,11 +26,14 @@ from prescience.cloud.schemas import (
 from prescience.cloud.store import CloudStore
 from prescience.cloud.stream import SSEBroadcaster, encode_sse
 from prescience.events.schemas import AnyEvent
+from prescience.config import parse_source
 from prescience.pipeline.enroll import next_enrollment_video_path, normalize_sku_name
 from prescience.pipeline.tracking_session import TrackingSessionManager
 from prescience.pipeline.web_onboarding import next_model_version_for_sku, save_browser_label
 
 router = APIRouter()
+INITIAL_ONBOARDING_MIN_REVIEWED = 24
+INITIAL_ONBOARDING_MIN_POSITIVE = 12
 
 
 def _store(request: Request) -> CloudStore:
@@ -76,6 +79,67 @@ def _session_summary(session: dict[str, Any]) -> dict[str, Any]:
             "labeled": sum(1 for item in approval if item.get("status") in {"positive", "negative", "skipped"}),
             "pending": sum(1 for item in approval if item.get("status", "pending") == "pending"),
         },
+    }
+
+
+def _approval_gate(store: CloudStore, session: dict[str, Any]) -> dict[str, Any]:
+    required = 0
+    enforced = False
+
+    latest_job_id = session.get("latest_job_id")
+    if latest_job_id:
+        job = store.get_ui_job(str(latest_job_id))
+        if job is not None:
+            payload = job.get("payload", {})
+            if bool(payload.get("append")) and bool(payload.get("approval_only")):
+                enforced = True
+                try:
+                    required = max(0, int(payload.get("required_approval_count", 30)))
+                except (TypeError, ValueError):
+                    required = 30
+
+    reviewed = sum(
+        1
+        for item in session.get("approval_candidates", [])
+        if item.get("status") in {"positive", "negative"}
+    )
+    remaining = max(required - reviewed, 0)
+    return {
+        "enforced": enforced,
+        "required": required,
+        "reviewed": reviewed,
+        "remaining": remaining,
+    }
+
+
+def _onboarding_quality_gate(session: dict[str, Any], approval_gate: dict[str, Any]) -> dict[str, Any]:
+    """Minimum label quality guard before stage2 training."""
+    candidates = session.get("approval_candidates", [])
+    reviewed = sum(1 for item in candidates if item.get("status") in {"positive", "negative"})
+    positives = sum(1 for item in candidates if item.get("status") == "positive")
+
+    if approval_gate.get("enforced"):
+        required_reviewed = int(approval_gate.get("required", 0))
+        return {
+            "enforced": True,
+            "required_reviewed": required_reviewed,
+            "required_positive": 0,
+            "reviewed": reviewed,
+            "positives": positives,
+            "ready": reviewed >= required_reviewed,
+            "reason": "append_review_gate",
+        }
+
+    required_reviewed = min(INITIAL_ONBOARDING_MIN_REVIEWED, len(candidates))
+    required_positive = min(INITIAL_ONBOARDING_MIN_POSITIVE, required_reviewed)
+    return {
+        "enforced": required_reviewed > 0,
+        "required_reviewed": required_reviewed,
+        "required_positive": required_positive,
+        "reviewed": reviewed,
+        "positives": positives,
+        "ready": reviewed >= required_reviewed and positives >= required_positive,
+        "reason": "initial_onboarding_quality",
     }
 
 
@@ -355,7 +419,7 @@ async def ui_sku_enroll(
     session = store.create_onboarding_session(
         sku_id=normalized_sku,
         version_tag=f"v{version_num}",
-        mode="quick",
+        mode="milestone",
         state="extracting",
         seed_candidates=[],
         approval_candidates=[],
@@ -372,7 +436,8 @@ async def ui_sku_enroll(
             "video_path": str(target_path),
             "append": False,
             "seed_per_bin": 4,
-            "approve_per_bin": 5,
+            "approve_per_bin": 4,
+            "max_proposals_per_frame": 4,
             "target_frames": 150,
             "blur_min": 4.0,
             "dedupe_sim": 0.98,
@@ -429,6 +494,10 @@ async def ui_sku_append_train(
             "append": True,
             "seed_per_bin": 4,
             "approve_per_bin": 5,
+            "required_approval_count": 30,
+            "sections": 6,
+            "conf_propose": 0.03,
+            "max_proposals_per_frame": 8,
             "target_frames": 150,
             "blur_min": 4.0,
             "dedupe_sim": 0.98,
@@ -448,19 +517,24 @@ def onboarding_page(session_id: str, request: Request) -> HTMLResponse:
     context = {
         "session": session,
         "summary": _session_summary(session),
+        "asset_version": request.app.state.asset_version,
     }
     return templates.TemplateResponse(request=request, name="onboarding.html", context=context)
 
 
 @router.get("/api/onboarding/{session_id}")
 def api_get_onboarding_session(session_id: str, request: Request) -> dict[str, Any]:
-    session = _store(request).get_onboarding_session(session_id)
+    store = _store(request)
+    session = store.get_onboarding_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
+    approval_gate = _approval_gate(store, session)
     return {
         "session": session,
         "summary": _session_summary(session),
-        "full_train_ready": _store(request).sku_full_train_ready(session["sku_id"]),
+        "approval_gate": approval_gate,
+        "quality_gate": _onboarding_quality_gate(session, approval_gate),
+        "full_train_ready": store.sku_full_train_ready(session["sku_id"]),
     }
 
 
@@ -519,6 +593,9 @@ def api_onboarding_seed_complete(session_id: str, request: Request) -> dict[str,
     session = store.get_onboarding_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
+    if session.get("state") != "seed_labeling":
+        raise HTTPException(status_code=422, detail="Stage1 can only be started from seed_labeling state")
+    approve_per_bin = 4 if str(session.get("mode")) == "milestone" else 5
     job = store.create_ui_job(
         sku_id=session["sku_id"],
         job_type="train_stage1",
@@ -526,7 +603,12 @@ def api_onboarding_seed_complete(session_id: str, request: Request) -> dict[str,
         step="train_stage1",
         progress=0.0,
         message="Queued stage1 training",
-        payload={"session_id": session_id, "approve_per_bin": 5, "conf_propose": 0.10},
+        payload={
+            "session_id": session_id,
+            "approve_per_bin": approve_per_bin,
+            "conf_propose": 0.03,
+            "max_proposals_per_frame": 4,
+        },
     )
     session = store.update_onboarding_session(
         session_id,
@@ -551,6 +633,38 @@ def api_onboarding_approvals_complete(session_id: str, request: Request) -> dict
     session = store.get_onboarding_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
+    if session.get("state") != "approval_labeling":
+        raise HTTPException(status_code=422, detail="Stage2 can only be started from approval_labeling state")
+
+    gate = _approval_gate(store, session)
+    if gate["enforced"] and gate["reviewed"] < gate["required"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Complete at least {gate['required']} approve/disapprove labels "
+                f"before retraining ({gate['reviewed']} done)."
+            ),
+        )
+    quality_gate = _onboarding_quality_gate(session, gate)
+    if quality_gate["enforced"] and not quality_gate["ready"]:
+        if quality_gate["reason"] == "initial_onboarding_quality":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Onboarding quality gate not met. "
+                    f"Need reviewed {quality_gate['required_reviewed']} and "
+                    f"positives {quality_gate['required_positive']} "
+                    f"(currently reviewed={quality_gate['reviewed']}, positives={quality_gate['positives']})."
+                ),
+            )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Complete at least {quality_gate['required_reviewed']} approve/disapprove labels "
+                f"before retraining ({quality_gate['reviewed']} done)."
+            ),
+        )
+
     job = store.create_ui_job(
         sku_id=session["sku_id"],
         job_type="train_stage2",
@@ -622,6 +736,21 @@ def ui_delete_sku(request: Request, sku_id: str = Form(...)) -> str:
     )
 
 
+@router.get("/api/zone/frame")
+def api_zone_frame(source: str = Query("0")) -> Response:
+    cap = cv2.VideoCapture(parse_source(source))
+    if not cap.isOpened():
+        raise HTTPException(status_code=400, detail=f"Could not open source: {source}")
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not read frame from source")
+    ok, encoded = cv2.imencode(".jpg", frame)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not encode frame")
+    return Response(content=bytes(encoded.tobytes()), media_type="image/jpeg")
+
+
 @router.get("/api/zone/{line_id}")
 def api_get_zone(line_id: str, request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
@@ -648,19 +777,22 @@ def api_save_zone(line_id: str, payload: ZoneConfigRequest) -> dict[str, Any]:
     return {"ok": True, "path": str(path), "zone": data["zone"]}
 
 
-@router.get("/api/zone/frame")
-def api_zone_frame(source: str = Query("0")) -> StreamingResponse:
-    cap = cv2.VideoCapture(int(source) if source.isdigit() else source)
-    if not cap.isOpened():
-        raise HTTPException(status_code=400, detail=f"Could not open source: {source}")
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        raise HTTPException(status_code=400, detail="Could not read frame from source")
-    ok, encoded = cv2.imencode(".jpg", frame)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Could not encode frame")
-    return StreamingResponse(iter([bytes(encoded.tobytes())]), media_type="image/jpeg")
+@router.get("/ui/zone", response_class=HTMLResponse)
+def zone_page(
+    request: Request,
+    sku_id: str = Query(""),
+    line_id: str = Query("line-1"),
+) -> HTMLResponse:
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request=request,
+        name="zone.html",
+        context={
+            "sku_id": sku_id,
+            "line_id": line_id,
+            "asset_version": request.app.state.asset_version,
+        },
+    )
 
 
 @router.get("/ui/tracking", response_class=HTMLResponse)
@@ -670,11 +802,26 @@ def tracking_page(
     line_id: str = Query("line-1"),
 ) -> HTMLResponse:
     templates = request.app.state.templates
-    skus = _store(request).list_skus()
+    store = _store(request)
+    skus = store.list_skus()
+    models_by_sku: dict[str, list[int]] = {}
+    latest_version_by_sku: dict[str, int | None] = {}
+    for item in skus:
+        versions = store.list_model_versions_for_sku(item["sku_id"])
+        models_by_sku[item["sku_id"]] = versions
+        latest_version_by_sku[item["sku_id"]] = versions[-1] if versions else None
     return templates.TemplateResponse(
         request=request,
         name="tracking.html",
-        context={"sku_id": sku_id, "line_id": line_id, "skus": skus},
+        context={
+            "sku_id": sku_id,
+            "line_id": line_id,
+            "skus": skus,
+            "models_by_sku": models_by_sku,
+            "latest_version_by_sku": latest_version_by_sku,
+            "tracker_conf_default": request.app.state.settings.tracker.conf,
+            "asset_version": request.app.state.asset_version,
+        },
     )
 
 
@@ -699,11 +846,16 @@ def ui_tracking_start(payload: TrackingStartRequest, request: Request) -> dict[s
         zone_config_path=zone_path,
         config_path=Path("configs/default.yaml"),
         event_endpoint=payload.event_endpoint,
+        tracker_conf=payload.conf,
+        direction_override=payload.direction,
         run_id=payload.run_id,
     )
     return {
         "ok": True,
         "session_id": session.session_id,
+        "model_path": model_path,
+        "tracker_conf": payload.conf,
+        "direction": payload.direction,
         "stream_url": f"/ui/tracking/stream/{session.session_id}",
         "status_url": f"/api/tracking/{session.session_id}",
         "stop_url": f"/ui/tracking/{session.session_id}/stop",

@@ -18,9 +18,9 @@ counting:
   max_track_idle_frames: 30
 
 tracker:
-  conf: 0.35
+  conf: 0.01
   classes: []
-  tracker_cfg: bytetrack.yaml
+  tracker_cfg: configs/bytetrack_low_conf.yaml
 
 quality:
   min_brightness: 30.0

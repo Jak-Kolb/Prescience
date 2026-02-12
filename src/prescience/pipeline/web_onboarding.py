@@ -123,7 +123,11 @@ def _pick_evenly(section_paths: list[Path], k: int, selectable: set[str]) -> lis
     return [available[i] for i in idxs]
 
 
-def _append_history_new_files(frames_dir: Path) -> set[str]:
+def _append_history_new_files(
+    frames_dir: Path,
+    *,
+    append_video_path: str | None = None,
+) -> set[str]:
     meta_path = frames_dir.parent / "meta.json"
     if not meta_path.exists():
         return set()
@@ -136,17 +140,29 @@ def _append_history_new_files(frames_dir: Path) -> set[str]:
     if not isinstance(history, list):
         return set()
 
-    out: set[str] = set()
-    for item in history:
+    def _file_set(entry: dict[str, Any]) -> set[str]:
+        files = entry.get("new_files")
+        if not isinstance(files, list):
+            return set()
+        return {value for value in files if isinstance(value, str)}
+
+    if append_video_path:
+        target = Path(append_video_path).as_posix()
+        for item in reversed(history):
+            if not isinstance(item, dict):
+                continue
+            video_path = item.get("video_path")
+            if isinstance(video_path, str) and Path(video_path).as_posix() == target:
+                return _file_set(item)
+
+    # Fallback: focus on most recent append batch only.
+    for item in reversed(history):
         if not isinstance(item, dict):
             continue
-        files = item.get("new_files")
-        if not isinstance(files, list):
-            continue
-        for value in files:
-            if isinstance(value, str):
-                out.add(value)
-    return out
+        selected = _file_set(item)
+        if selected:
+            return selected
+    return set()
 
 
 def _select_processable_image_names(
@@ -154,12 +170,13 @@ def _select_processable_image_names(
     processable_names: set[str],
     frames_dir: Path,
     overwrite: bool,
+    append_video_path: str | None = None,
 ) -> set[str]:
     if overwrite:
         return processable_names
 
     image_names = {image.name for image in images}
-    appended_names = _append_history_new_files(frames_dir)
+    appended_names = _append_history_new_files(frames_dir, append_video_path=append_video_path)
     if not appended_names:
         return processable_names
     return processable_names.intersection(image_names).intersection(appended_names)
@@ -217,6 +234,7 @@ def prepare_seed_candidates(
     manual_per_section: int = 4,
     sections: int = 6,
     overwrite: bool = False,
+    append_video_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Prepare seed labeling candidates for browser onboarding."""
     frames_dir, _labels_dir, _manifest_path, manifest, images = _manifest_and_images(sku)
@@ -231,7 +249,10 @@ def prepare_seed_candidates(
         processable_names=processable_names,
         frames_dir=frames_dir,
         overwrite=overwrite,
+        append_video_path=append_video_path,
     )
+    section_source = [image for image in images if image.name in selectable] or images
+    sectioned = _split_into_sections(section_source, sections)
     candidates: list[dict[str, Any]] = []
     for section in sectioned:
         for image in _pick_evenly(section, manual_per_section, selectable):
@@ -295,6 +316,7 @@ def _collect_proposed_boxes_xyxy(
     boxes_xyxy: np.ndarray,
     confidences: np.ndarray,
     pick_largest: bool,
+    max_boxes: int | None = None,
 ) -> list[dict[str, int]]:
     if boxes_xyxy.size == 0:
         return []
@@ -306,7 +328,11 @@ def _collect_proposed_boxes_xyxy(
         order = np.argsort(confidences)[::-1]
 
     out: list[dict[str, int]] = []
-    for idx in order.tolist():
+    selected = order.tolist()
+    if max_boxes is not None and max_boxes > 0:
+        selected = selected[:max_boxes]
+
+    for idx in selected:
         x1, y1, x2, y2 = boxes_xyxy[int(idx)]
         out.append({"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)})
     return out
@@ -319,15 +345,16 @@ def prepare_approval_candidates(
     approve_per_section: int = 5,
     sections: int = 6,
     overwrite: bool = False,
-    conf: float = 0.10,
+    conf: float = 0.03,
     imgsz: int = 640,
-    pick_largest: bool = True,
+    pick_largest: bool = False,
+    max_proposals_per_frame: int = 8,
+    append_video_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Prepare approval candidates with model proposals for browser workflow."""
     frames_dir, labels_dir, manifest_path, manifest, images = _manifest_and_images(sku)
     _ = labels_dir
     _ = manifest_path
-    sectioned = _split_into_sections(images, sections)
     processable_names = {
         image.name
         for image in images
@@ -338,7 +365,10 @@ def prepare_approval_candidates(
         processable_names=processable_names,
         frames_dir=frames_dir,
         overwrite=overwrite,
+        append_video_path=append_video_path,
     )
+    section_source = [image for image in images if image.name in selectable] or images
+    sectioned = _split_into_sections(section_source, sections)
 
     model = YOLO(stage1_model_path)
     candidates: list[dict[str, Any]] = []
@@ -348,7 +378,13 @@ def prepare_approval_candidates(
             if image is None:
                 proposals: list[dict[str, int]] = []
             else:
-                results = model.predict(source=image, conf=conf, imgsz=imgsz, verbose=False)
+                results = model.predict(
+                    source=image,
+                    conf=conf,
+                    imgsz=imgsz,
+                    max_det=max_proposals_per_frame,
+                    verbose=False,
+                )
                 result = results[0]
                 proposals = []
                 if result.boxes is not None and len(result.boxes) > 0:
@@ -358,6 +394,7 @@ def prepare_approval_candidates(
                         boxes_xyxy=boxes_xyxy,
                         confidences=confs,
                         pick_largest=pick_largest,
+                        max_boxes=max_proposals_per_frame,
                     )
             candidates.append(
                 {
@@ -421,8 +458,8 @@ def train_stage1_for_session(
     effective_epochs = resolved.epochs_stage1
     if mode == "quick":
         effective_epochs = max(6, dynamic_quick_epochs(new_count) - 2)
-        if is_first_enrollment:
-            effective_epochs = max(effective_epochs, 12)
+    if is_first_enrollment:
+        effective_epochs = max(effective_epochs, 20)
 
     effective_freeze = resolved.freeze
     if mode == "quick" and new_count >= 12:
@@ -443,7 +480,7 @@ def train_stage1_for_session(
             base_model=base_model,
             imgsz=resolved.imgsz,
             epochs=effective_epochs,
-            conf=0.10,
+            conf=0.01,
             patience=resolved.patience,
             freeze=effective_freeze,
             workers=resolved.workers,
@@ -521,7 +558,7 @@ def train_stage2_for_session(
             base_model=stage1_model_path,
             imgsz=resolved.imgsz,
             epochs=effective_epochs,
-            conf=0.10,
+            conf=0.01,
             patience=resolved.patience,
             freeze=effective_freeze,
             workers=resolved.workers,

@@ -25,6 +25,10 @@ body {
   padding: 22px;
 }
 
+.container.wide {
+  max-width: 1560px;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -245,4 +249,38 @@ canvas {
   width: 100%;
   height: auto;
   display: block;
+}
+
+.tracking-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(840px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.stream-wrap.large {
+  margin-top: 0;
+  min-height: min(78vh, 980px);
+}
+
+.stream-wrap.large img {
+  width: 100%;
+  height: min(78vh, 980px);
+  object-fit: contain;
+  background: #0b1118;
+}
+
+@media (max-width: 1200px) {
+  .tracking-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .stream-wrap.large {
+    min-height: 420px;
+  }
+
+  .stream-wrap.large img {
+    height: auto;
+    max-height: 70vh;
+  }
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
@@ -310,3 +311,55 @@ def test_dataset_hash_and_resume_decision(tmp_path: Path) -> None:
     )
     assert bad.allowed is False
     assert bad.reason == "dataset_hash_mismatch"
+
+
+def test_eval_comparison_prunes_older_models_when_new_is_better(tmp_path: Path, monkeypatch) -> None:
+    model_root = tmp_path / "models" / "yolo"
+    v1 = model_root / "can1_test_v1"
+    v2 = model_root / "can1_test_v2"
+    v3 = model_root / "can1_test_v3"
+    for path in (v1, v2, v3):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "best.pt").write_bytes(b"pt")
+
+    dataset_dir = tmp_path / "dataset"
+    (dataset_dir / "images" / "val").mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "images" / "val" / "000001.jpg").write_bytes(b"fake")
+    data_yaml = dataset_dir / "data.yaml"
+    data_yaml.write_text("path: test\n", encoding="utf-8")
+
+    def fake_eval(*, model_path: str, **_kwargs):  # noqa: ANN001
+        if model_path.endswith("can1_test_v2/best.pt"):
+            return {"status": "ok", "model_path": model_path, "metrics": {"metrics/mAP50-95(B)": 0.60}}
+        return {"status": "ok", "model_path": model_path, "metrics": {"metrics/mAP50-95(B)": 0.71}}
+
+    class FakePred:
+        def plot(self):
+            return np.zeros((10, 10, 3), dtype=np.uint8)
+
+    class FakeYOLO:
+        def __init__(self, _model_path: str):
+            pass
+
+        def predict(self, **_kwargs):
+            return [FakePred()]
+
+    monkeypatch.setattr(yolo_mod, "_evaluate_model_summary", fake_eval)
+    monkeypatch.setattr(yolo_mod, "YOLO", FakeYOLO)
+
+    yolo_mod._write_quick_eval_artifacts(
+        best_model_path=v3 / "best.pt",
+        old_model_path=str(v2 / "best.pt"),
+        data_yaml=data_yaml,
+        model_out_dir=v3,
+        imgsz=640,
+        conf=0.25,
+        device="cpu",
+    )
+
+    assert v3.exists()
+    assert not v1.exists()
+    assert not v2.exists()
+
+    metrics = json.loads((v3 / "eval" / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["comparison"]["improved"] is True

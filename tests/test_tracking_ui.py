@@ -91,3 +91,21 @@ def test_tracking_start_route_and_stream(tmp_path: Path, monkeypatch) -> None:
         stopped = client.post("/ui/tracking/sess-1/stop")
         assert stopped.status_code == 200
         assert stopped.json()["ok"] is True
+
+
+def test_zone_and_tracking_pages_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    app = create_app(db_path=tmp_path / "cloud.db", config_path=Path("configs/default.yaml"))
+    app.state.job_runner.stop()
+
+    with TestClient(app) as client:
+        zone = client.get("/ui/zone?sku_id=can1_test&line_id=line-1")
+        assert zone.status_code == 200
+        assert "Zone Setup" in zone.text
+        assert "Go to Tracking" in zone.text
+
+        tracking = client.get("/ui/tracking?sku_id=can1_test&line_id=line-1")
+        assert tracking.status_code == 200
+        assert "Tracking Console" in tracking.text
+        assert "Run Tracking" in tracking.text
+        assert "in_and_out" in tracking.text

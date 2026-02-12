@@ -767,8 +767,11 @@ class CloudStore:
         return sorted(set(versions))
 
     def sku_full_train_ready(self, sku_id: str, models_root: str | Path = "data/models/yolo") -> bool:
-        """True when SKU has at least v1+v2 stable models."""
-        return len(self.list_model_versions_for_sku(sku_id=sku_id, models_root=models_root)) >= 2
+        """True when SKU has reached version v2+ even if earlier versions were pruned."""
+        versions = self.list_model_versions_for_sku(sku_id=sku_id, models_root=models_root)
+        if not versions:
+            return False
+        return max(versions) >= 2
 
     def sync_skus_from_profiles(self, profiles_root: str | Path) -> dict[str, int]:
         """Register missing SKUs from profile.json files under profiles root."""

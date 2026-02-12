@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zone Setup</title>
+    <link rel="stylesheet" href="/static/ui.css?v={{ asset_version }}" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="topbar">
+        <h1>Zone Setup</h1>
+        <div class="inline-actions">
+          <a class="button ghost" href="/ui/tracking?sku_id={{ sku_id }}&line_id={{ line_id }}">Go to Tracking</a>
+          <a class="button ghost" href="/">Back to Dashboard</a>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>Define Zone (Per Line)</h2>
+        <p class="muted">
+          Click <code>Load Frame</code>, then click points on the image to draw a polygon.
+          Save when done.
+        </p>
+        <div class="stack-form">
+          <label>Source</label>
+          <input id="zone-source" type="text" value="0" />
+          <label>Line ID</label>
+          <input id="zone-line-id" type="text" value="{{ line_id }}" />
+          <label>Direction</label>
+          <select id="zone-direction">
+            <option value="left_to_right">left_to_right</option>
+            <option value="right_to_left">right_to_left</option>
+            <option value="top_to_bottom">top_to_bottom</option>
+            <option value="bottom_to_top">bottom_to_top</option>
+            <option value="in_and_out">in_and_out</option>
+          </select>
+        </div>
+        <div class="inline-actions">
+          <button id="zone-load-frame" type="button">Load Frame</button>
+          <button id="zone-undo" class="ghost" type="button">Undo</button>
+          <button id="zone-clear" class="ghost" type="button">Clear</button>
+          <button id="zone-save" type="button">Save Zone</button>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="zone-canvas"></canvas>
+        </div>
+        <div id="zone-status" class="muted"></div>
+      </section>
+    </main>
+
+    <script>
+      window.PRESCIENCE_ZONE = {
+        skuId: {{ sku_id | tojson }},
+        lineId: {{ line_id | tojson }},
+      };
+    </script>
+    <script src="/static/zone.js?v={{ asset_version }}"></script>
+  </body>
+</html>

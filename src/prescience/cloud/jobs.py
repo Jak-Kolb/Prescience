@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import traceback
@@ -10,6 +11,7 @@ from typing import Any
 
 from prescience.cloud.store import CloudStore
 from prescience.pipeline.enroll import extract_frames_for_sku
+from prescience.pipeline.enroll import resolve_base_model_for_sku
 from prescience.pipeline.web_onboarding import (
     prepare_approval_candidates,
     prepare_seed_candidates,
@@ -117,6 +119,10 @@ class UIJobRunner:
         session_id = str(payload["session_id"])
         video_path = Path(str(payload["video_path"]))
         append = bool(payload.get("append", False))
+        session = self.store.get_onboarding_session(session_id)
+        if session is None:
+            raise RuntimeError(f"Session not found: {session_id}")
+        version_num = _version_num_from_tag(str(session["version_tag"]))
 
         self.store.update_ui_job(job["job_id"], step="extracting", progress=5.0, message="Extracting enrollment frames")
         extract_frames_for_sku(
@@ -128,6 +134,58 @@ class UIJobRunner:
             dedupe_max_similarity=float(payload.get("dedupe_sim", 0.98)),
             append=append,
         )
+
+        if append and bool(self.store.list_model_versions_for_sku(sku)):
+            target_approvals = int(payload.get("required_approval_count", 30))
+            sections = int(payload.get("sections", 6))
+            approve_per_section = max(1, math.ceil(target_approvals / max(1, sections)))
+            stage1_model_path = resolve_base_model_for_sku(
+                sku=sku,
+                base_model="auto",
+                target_version=version_num,
+            )
+            self.store.update_ui_job(
+                job["job_id"],
+                step="approval_labeling",
+                progress=80.0,
+                message="Preparing model proposals for append training",
+            )
+            approval_candidates = prepare_approval_candidates(
+                sku=sku,
+                stage1_model_path=stage1_model_path,
+                approve_per_section=approve_per_section,
+                sections=sections,
+                conf=float(payload.get("conf_propose", 0.03)),
+                imgsz=int(payload.get("imgsz", 640)),
+                overwrite=bool(payload.get("overwrite", False)),
+                max_proposals_per_frame=int(payload.get("max_proposals_per_frame", 8)),
+                append_video_path=str(video_path),
+            )
+            if target_approvals > 0 and len(approval_candidates) > target_approvals:
+                approval_candidates = approval_candidates[:target_approvals]
+            required = min(target_approvals, len(approval_candidates))
+
+            next_payload = dict(payload)
+            next_payload["required_approval_count"] = required
+            next_payload["approval_only"] = True
+            self.store.update_onboarding_session(
+                session_id,
+                state="approval_labeling",
+                seed_candidates=[],
+                approval_candidates=approval_candidates,
+                stage1_model_path=stage1_model_path,
+                latest_job_id=job["job_id"],
+            )
+            self.store.update_ui_job(
+                job["job_id"],
+                status="waiting_user",
+                step="approval_labeling",
+                progress=100.0,
+                message=f"Review {required} model guesses, then start retraining",
+                payload=next_payload,
+            )
+            return
+
         self.store.update_ui_job(job["job_id"], step="seed_labeling", progress=80.0, message="Preparing seed candidates")
         seed_candidates = prepare_seed_candidates(
             sku,
@@ -178,9 +236,10 @@ class UIJobRunner:
             sku=sku,
             stage1_model_path=stage1_model_path,
             approve_per_section=int(payload.get("approve_per_bin", 5)),
-            conf=float(payload.get("conf_propose", 0.10)),
+            conf=float(payload.get("conf_propose", 0.03)),
             imgsz=int(payload.get("imgsz", 640)),
             overwrite=bool(payload.get("overwrite", False)),
+            max_proposals_per_frame=int(payload.get("max_proposals_per_frame", 8)),
         )
         self.store.update_onboarding_session(
             session_id,
