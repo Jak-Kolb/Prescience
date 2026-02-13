@@ -206,6 +206,56 @@ code {
   color: #cc6b00;
 }
 
+.hidden {
+  display: none !important;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(12, 18, 28, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+
+.overlay-card {
+  width: min(520px, 92vw);
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 18px 20px;
+  box-shadow: 0 14px 40px rgba(15, 24, 39, 0.25);
+}
+
+.overlay-card h2 {
+  margin: 0 0 6px 0;
+}
+
+.manual-cta {
+  margin-top: 8px;
+}
+
+.overlay-seed {
+  width: min(980px, 96vw);
+}
+
+.seed-canvas-wrap {
+  width: 100%;
+  max-height: 60vh;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+#seed-review-canvas {
+  display: block;
+  max-width: 100%;
+}
+
 .canvas-wrap {
   width: 100%;
   max-height: 560px;

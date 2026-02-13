@@ -74,6 +74,27 @@ class CloudSettings(BaseModel):
     sse_retry_ms: int = 1500
 
 
+class OnboardingVLMSettings(BaseModel):
+    enabled: bool = True
+    model: str = "gemini-3-pro-preview"
+    api_key_env: str = "GEMINI_API_KEY"
+    batch_size: int = 24
+    seed_target_count: int = 24
+    seed_required_reviews: int = 3
+    initial_approval_target_count: int = 24
+    append_approval_target_count: int = 30
+    max_boxes_seed: int = 4
+    max_boxes_approval: int = 8
+    trust_required_reviews: int = 3
+    initial_auto_approval_count: int = 24
+    append_auto_approval_count: int = 30
+    gemini_retry_attempts: int = 3
+    gemini_retry_backoff_seconds: float = 1.5
+    failure_mode: str = "manual_prompt"
+    auto_after_trust: bool = True
+    detector_conf_for_auto_label: float = 0.02
+
+
 class AppSettings(BaseModel):
     camera: CameraSettings = Field(default_factory=CameraSettings)
     line: LineSettings = Field(default_factory=LineSettings)
@@ -86,6 +107,7 @@ class AppSettings(BaseModel):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     profiles: ProfileSettings = Field(default_factory=ProfileSettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
+    onboarding_vlm: OnboardingVLMSettings = Field(default_factory=OnboardingVLMSettings)
 
 
 DEFAULT_CONFIG_PATH = Path("configs/default.yaml")

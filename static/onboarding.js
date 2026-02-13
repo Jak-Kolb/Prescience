@@ -5,6 +5,13 @@
   const sessionId = boot.sessionId;
   let session = boot.session;
   let summary = boot.summary;
+  let seedGate = {
+    enforced: false,
+    required: 0,
+    reviewed: 0,
+    remaining: 0,
+    auto_start: false,
+  };
   let candidates = [];
   let stage = "seed";
   let currentIndex = 0;
@@ -37,7 +44,11 @@
   }
 
   function getActiveCandidates() {
-    if (session.state === "approval_labeling" || session.state === "train_stage2" || session.state === "complete") {
+    if (
+      session.state === "approval_labeling" ||
+      session.state === "train_stage2" ||
+      session.state === "complete"
+    ) {
       stage = "approval";
       return session.approval_candidates || [];
     }
@@ -57,11 +68,17 @@
   }
 
   function cloneBoxes(items) {
-    return (items || []).map((b) => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 }));
+    return (items || []).map((b) => ({
+      x1: b.x1,
+      y1: b.y1,
+      x2: b.x2,
+      y2: b.y2,
+    }));
   }
 
   function effectiveBoxesForFrame(frameName, fallbackBoxes) {
-    if (draftBoxesByFrame.has(frameName)) return cloneBoxes(draftBoxesByFrame.get(frameName));
+    if (draftBoxesByFrame.has(frameName))
+      return cloneBoxes(draftBoxesByFrame.get(frameName));
     return cloneBoxes(fallbackBoxes);
   }
 
@@ -82,15 +99,32 @@
     }
     if (previewBox) {
       ctx.strokeStyle = "#ff9f1c";
-      ctx.strokeRect(previewBox.x1, previewBox.y1, previewBox.x2 - previewBox.x1, previewBox.y2 - previewBox.y1);
+      ctx.strokeRect(
+        previewBox.x1,
+        previewBox.y1,
+        previewBox.x2 - previewBox.x1,
+        previewBox.y2 - previewBox.y1,
+      );
     }
   }
 
   function clampBox(box) {
-    const x1 = Math.max(0, Math.min(canvas.width - 1, Math.min(box.x1, box.x2)));
-    const y1 = Math.max(0, Math.min(canvas.height - 1, Math.min(box.y1, box.y2)));
-    const x2 = Math.max(0, Math.min(canvas.width - 1, Math.max(box.x1, box.x2)));
-    const y2 = Math.max(0, Math.min(canvas.height - 1, Math.max(box.y1, box.y2)));
+    const x1 = Math.max(
+      0,
+      Math.min(canvas.width - 1, Math.min(box.x1, box.x2)),
+    );
+    const y1 = Math.max(
+      0,
+      Math.min(canvas.height - 1, Math.min(box.y1, box.y2)),
+    );
+    const x2 = Math.max(
+      0,
+      Math.min(canvas.width - 1, Math.max(box.x1, box.x2)),
+    );
+    const y2 = Math.max(
+      0,
+      Math.min(canvas.height - 1, Math.max(box.y1, box.y2)),
+    );
     return { x1, y1, x2, y2 };
   }
 
@@ -115,9 +149,11 @@
     }
     const frameName = candidate.frame_name;
     const hasDraft = draftBoxesByFrame.has(frameName);
+    const reason = candidate.reason ? ` reason=${candidate.reason}` : "";
+    const needsReview = candidate.needs_review ? " manual-needed" : "";
     setText(
       "frame-label",
-      `${candidate.frame_name} (${currentIndex + 1}/${candidates.length}) stage=${stage} status=${candidate.status || "pending"}${hasDraft ? " draft=unsaved" : ""}`
+      `${candidate.frame_name} (${currentIndex + 1}/${candidates.length}) stage=${stage} status=${candidate.status || "pending"}${needsReview}${reason}${hasDraft ? " draft=unsaved" : ""}`,
     );
     boxes = effectiveBoxesForFrame(frameName, candidate.boxes || []);
     previewBox = null;
@@ -142,7 +178,19 @@
     const payload = await res.json();
     session = payload.session;
     summary = payload.summary;
-    const approvalGate = payload.approval_gate || { enforced: false, required: 0, reviewed: 0, remaining: 0 };
+    seedGate = payload.seed_gate || {
+      enforced: false,
+      required: 0,
+      reviewed: 0,
+      remaining: 0,
+      auto_start: false,
+    };
+    const approvalGate = payload.approval_gate || {
+      enforced: false,
+      required: 0,
+      reviewed: 0,
+      remaining: 0,
+    };
     const qualityGate = payload.quality_gate || {
       enforced: false,
       required_reviewed: 0,
@@ -161,19 +209,44 @@
     }
     setText("session-state", summary.state);
     setText("seed-progress", `${summary.seed.labeled}/${summary.seed.total}`);
-    setText("approval-progress", `${summary.approval.labeled}/${summary.approval.total}`);
+    setText(
+      "approval-progress",
+      `${summary.approval.labeled}/${summary.approval.total}`,
+    );
     const seedButton = byId("seed-complete");
     const approvalButton = byId("approval-complete");
+    const seedGateEl = byId("seed-gate");
     const gateEl = byId("approval-gate");
 
     seedButton.disabled = !(session.state === "seed_labeling");
-    const approvalGateReady = !approvalGate.enforced || approvalGate.reviewed >= approvalGate.required;
+    const approvalGateReady =
+      !approvalGate.enforced || approvalGate.reviewed >= approvalGate.required;
     const qualityGateReady = !qualityGate.enforced || qualityGate.ready;
-    const approvalAllowed = session.state === "approval_labeling" && approvalGateReady && qualityGateReady;
+    const approvalAllowed =
+      session.state === "approval_labeling" &&
+      approvalGateReady &&
+      qualityGateReady;
     approvalButton.disabled = !approvalAllowed;
 
     const approvalOnlyFlow = approvalGate.enforced && summary.seed.total === 0;
-    seedButton.style.display = approvalOnlyFlow ? "none" : "inline-flex";
+    if (approvalOnlyFlow) {
+      seedButton.style.display = "none";
+    } else if (seedGate.auto_start) {
+      seedButton.style.display = "none";
+    } else {
+      seedButton.style.display = "inline-flex";
+    }
+
+    if (seedGate.auto_start && summary.seed.total > 0) {
+      const manualNeeded = (session.seed_candidates || []).filter(
+        (item) => item.needs_review,
+      ).length;
+      seedGateEl.textContent =
+        `AI seed gate: review ${seedGate.required} frames before Stage1 auto-start (${seedGate.reviewed}/${seedGate.required}). ` +
+        `Manual-needed frames: ${manualNeeded}.`;
+    } else {
+      seedGateEl.textContent = "";
+    }
 
     if (approvalGate.enforced) {
       gateEl.textContent = `Append retrain requirement: ${approvalGate.reviewed}/${approvalGate.required} approve/disapprove labels completed (${approvalGate.remaining} remaining).`;
@@ -206,11 +279,14 @@
       alert("Draw at least one box for positive label.");
       return;
     }
-    const res = await fetch(`/api/onboarding/${encodeURIComponent(sessionId)}/labels`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch(
+      `/api/onboarding/${encodeURIComponent(sessionId)}/labels`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
     if (!res.ok) {
       const text = await res.text();
       alert(`Failed to save label: ${text}`);
@@ -229,9 +305,13 @@
     if (!root) return;
     root.innerHTML = "";
     const jobs = snapshot.jobs || [];
-    const latestJob = jobs.find((j) => j.job_id === session.latest_job_id) || jobs[0];
+    const latestJob =
+      jobs.find((j) => j.job_id === session.latest_job_id) || jobs[0];
     if (latestJob) {
-      setText("training-status", `${latestJob.status} · ${latestJob.step || "-"} · ${latestJob.message || ""}`);
+      setText(
+        "training-status",
+        `${latestJob.status} · ${latestJob.step || "-"} · ${latestJob.message || ""}`,
+      );
       setProgress(latestJob.progress || 0);
     }
     for (const job of jobs.slice(0, 8)) {
@@ -268,7 +348,10 @@
   });
 
   byId("seed-complete").addEventListener("click", async () => {
-    const res = await fetch(`/api/onboarding/${encodeURIComponent(sessionId)}/seed/complete`, { method: "POST" });
+    const res = await fetch(
+      `/api/onboarding/${encodeURIComponent(sessionId)}/seed/complete`,
+      { method: "POST" },
+    );
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -277,7 +360,10 @@
   });
 
   byId("approval-complete").addEventListener("click", async () => {
-    const res = await fetch(`/api/onboarding/${encodeURIComponent(sessionId)}/approvals/complete`, { method: "POST" });
+    const res = await fetch(
+      `/api/onboarding/${encodeURIComponent(sessionId)}/approvals/complete`,
+      { method: "POST" },
+    );
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -331,7 +417,9 @@
     }
   });
 
-  const jobsStream = new EventSource(`/stream/jobs?sku_id=${encodeURIComponent(session.sku_id)}`);
+  const jobsStream = new EventSource(
+    `/stream/jobs?sku_id=${encodeURIComponent(session.sku_id)}`,
+  );
   jobsStream.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
     renderJobs(payload.snapshot);

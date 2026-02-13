@@ -10,6 +10,11 @@ Training is orchestrated through pipeline and dataset modules, not standalone sc
 - `prescience train detector` builds a versioned dataset and trains a stable SKU model.
 - Default mode is `quick` with `base_model=auto` for fast incremental fine-tuning.
 - Onboarding defaults to `manual_per_section=4` (24 seed frames across 6 bins).
+- Web onboarding defaults to Gemini-first seed prelabeling (24 images), then Stage1 auto-start
+  after 3 reviewed seed labels (trust gate).
+- After trust, stage2 label generation/retraining is automatic (detector + Gemini validation)
+  and runs as a background dashboard job.
+- When Gemini is unavailable after retries, workflow moves to manual fallback mode.
 - First-time SKU onboarding in quick mode uses boosted epoch minimums for stage1/stage2.
 
 ## Modes

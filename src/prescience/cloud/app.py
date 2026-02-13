@@ -39,7 +39,7 @@ def create_app(db_path: str | Path, config_path: str | Path) -> FastAPI:
     app.state.store.sync_skus_from_profiles(settings.profiles.root)
     app.state.stream_bus = SSEBroadcaster()
     app.state.templates = templates
-    app.state.job_runner = UIJobRunner(app.state.store)
+    app.state.job_runner = UIJobRunner(app.state.store, settings=settings)
     app.state.tracking_manager = TrackingSessionManager()
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

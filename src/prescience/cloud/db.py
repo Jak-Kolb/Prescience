@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS onboarding_sessions (
   state TEXT NOT NULL,
   seed_candidates_json TEXT,
   approval_candidates_json TEXT,
+  session_context_json TEXT,
   stage1_model_path TEXT,
   latest_job_id TEXT,
   created_at TEXT NOT NULL,
@@ -106,6 +107,17 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(str(row["name"]) == column for row in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_sql: str) -> None:
+    if _column_exists(conn, table, column):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_sql}")
+
+
 def init_db(db_path: str | Path) -> None:
     """Initialize database schema."""
     path = Path(db_path)
@@ -114,6 +126,7 @@ def init_db(db_path: str | Path) -> None:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA_SQL)
+        _ensure_column(conn, "onboarding_sessions", "session_context_json", "TEXT")
         conn.commit()
     finally:
         conn.close()

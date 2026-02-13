@@ -112,6 +112,46 @@ def _approval_gate(store: CloudStore, session: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _seed_gate(store: CloudStore, session: dict[str, Any], *, default_required: int = 3) -> dict[str, Any]:
+    required = max(0, int(default_required))
+    auto_start = False
+
+    latest_job_id = session.get("latest_job_id")
+    if latest_job_id:
+        job = store.get_ui_job(str(latest_job_id))
+        if job is not None:
+            payload = job.get("payload", {})
+            try:
+                required = max(0, int(payload.get("seed_required_reviews", required)))
+            except (TypeError, ValueError):
+                required = max(0, int(default_required))
+            auto_start = bool(payload.get("seed_auto_start", False))
+
+    seed_candidates = session.get("seed_candidates", [])
+    if not seed_candidates:
+        return {
+            "enforced": False,
+            "required": 0,
+            "reviewed": 0,
+            "remaining": 0,
+            "auto_start": auto_start,
+        }
+
+    reviewed = sum(
+        1
+        for item in seed_candidates
+        if item.get("status") in {"positive", "negative"}
+    )
+    remaining = max(required - reviewed, 0)
+    return {
+        "enforced": required > 0,
+        "required": required,
+        "reviewed": reviewed,
+        "remaining": remaining,
+        "auto_start": auto_start,
+    }
+
+
 def _onboarding_quality_gate(session: dict[str, Any], approval_gate: dict[str, Any]) -> dict[str, Any]:
     """Minimum label quality guard before stage2 training."""
     candidates = session.get("approval_candidates", [])
@@ -140,6 +180,16 @@ def _onboarding_quality_gate(session: dict[str, Any], approval_gate: dict[str, A
         "positives": positives,
         "ready": reviewed >= required_reviewed and positives >= required_positive,
         "reason": "initial_onboarding_quality",
+    }
+
+
+def _auto_mode_status(session: dict[str, Any]) -> dict[str, Any]:
+    context = session.get("session_context", {}) or {}
+    manual_reason = str(context.get("manual_fallback_reason") or "")
+    return {
+        "auto_mode": bool(context.get("auto_mode_expected", False)),
+        "manual_required": session.get("state") == "manual_required",
+        "manual_reason": manual_reason,
     }
 
 
@@ -403,6 +453,7 @@ async def ui_upload_sku_video(
 async def ui_sku_enroll(
     request: Request,
     sku: str = Form(...),
+    object_description: str | None = Form(None),
     video: UploadFile = File(...),
 ) -> RedirectResponse:
     if video.filename is None:
@@ -415,7 +466,11 @@ async def ui_sku_enroll(
     )
     await _save_upload(video=video, target_path=target_path)
     store = _store(request)
+    settings = request.app.state.settings
+    resolved_description = (object_description or "").strip() or normalized_sku
     version_num = next_model_version_for_sku(normalized_sku)
+    trusted = store.sku_is_trusted(normalized_sku)
+    auto_mode_expected = bool(settings.onboarding_vlm.auto_after_trust) and trusted
     session = store.create_onboarding_session(
         sku_id=normalized_sku,
         version_tag=f"v{version_num}",
@@ -423,6 +478,12 @@ async def ui_sku_enroll(
         state="extracting",
         seed_candidates=[],
         approval_candidates=[],
+        session_context={
+            "object_description": resolved_description,
+            "flow_kind": "initial",
+            "auto_mode_expected": auto_mode_expected,
+            "manual_fallback_reason": None,
+        },
     )
     job = store.create_ui_job(
         sku_id=normalized_sku,
@@ -435,9 +496,23 @@ async def ui_sku_enroll(
             "session_id": session["session_id"],
             "video_path": str(target_path),
             "append": False,
-            "seed_per_bin": 4,
-            "approve_per_bin": 4,
-            "max_proposals_per_frame": 4,
+            "sections": 6,
+            "object_description": resolved_description,
+            "vlm_enabled": bool(settings.onboarding_vlm.enabled),
+            "seed_target_count": int(settings.onboarding_vlm.seed_target_count),
+            "seed_required_reviews": int(settings.onboarding_vlm.trust_required_reviews),
+            "seed_auto_start": True,
+            "required_approval_count": int(settings.onboarding_vlm.initial_auto_approval_count),
+            "max_boxes_seed": int(settings.onboarding_vlm.max_boxes_seed),
+            "max_proposals_per_frame": int(settings.onboarding_vlm.max_boxes_approval),
+            "gemini_model": str(settings.onboarding_vlm.model),
+            "gemini_api_key_env": str(settings.onboarding_vlm.api_key_env),
+            "gemini_batch_size": int(settings.onboarding_vlm.batch_size),
+            "gemini_retry_attempts": int(settings.onboarding_vlm.gemini_retry_attempts),
+            "gemini_retry_backoff_seconds": float(settings.onboarding_vlm.gemini_retry_backoff_seconds),
+            "detector_conf_for_auto_label": float(settings.onboarding_vlm.detector_conf_for_auto_label),
+            "failure_mode": str(settings.onboarding_vlm.failure_mode),
+            "auto_after_trust": bool(settings.onboarding_vlm.auto_after_trust),
             "target_frames": 150,
             "blur_min": 4.0,
             "dedupe_sim": 0.98,
@@ -452,7 +527,10 @@ async def ui_sku_enroll(
         metadata={"source": "ui_enroll"},
     )
     _jobs(request).enqueue(job["job_id"])
-    return RedirectResponse(url=f"/ui/onboarding/{session['session_id']}", status_code=303)
+    return RedirectResponse(
+        url=f"/?training_started=1&sku_id={normalized_sku}&session_id={session['session_id']}",
+        status_code=303,
+    )
 
 
 @router.post("/ui/sku/{sku_id}/append-train")
@@ -472,7 +550,10 @@ async def ui_sku_append_train(
     await _save_upload(video=video, target_path=target_path)
 
     store = _store(request)
+    settings = request.app.state.settings
     version_num = next_model_version_for_sku(normalized_sku)
+    trusted = store.sku_is_trusted(normalized_sku)
+    auto_mode_expected = bool(settings.onboarding_vlm.auto_after_trust) and trusted
     session = store.create_onboarding_session(
         sku_id=normalized_sku,
         version_tag=f"v{version_num}",
@@ -480,6 +561,12 @@ async def ui_sku_append_train(
         state="extracting",
         seed_candidates=[],
         approval_candidates=[],
+        session_context={
+            "object_description": normalized_sku,
+            "flow_kind": "append",
+            "auto_mode_expected": auto_mode_expected,
+            "manual_fallback_reason": None,
+        },
     )
     job = store.create_ui_job(
         sku_id=normalized_sku,
@@ -492,12 +579,20 @@ async def ui_sku_append_train(
             "session_id": session["session_id"],
             "video_path": str(target_path),
             "append": True,
-            "seed_per_bin": 4,
-            "approve_per_bin": 5,
-            "required_approval_count": 30,
+            "object_description": normalized_sku,
+            "vlm_enabled": bool(settings.onboarding_vlm.enabled),
+            "seed_required_reviews": int(settings.onboarding_vlm.trust_required_reviews),
+            "required_approval_count": int(settings.onboarding_vlm.append_auto_approval_count),
             "sections": 6,
-            "conf_propose": 0.03,
-            "max_proposals_per_frame": 8,
+            "max_proposals_per_frame": int(settings.onboarding_vlm.max_boxes_approval),
+            "gemini_model": str(settings.onboarding_vlm.model),
+            "gemini_api_key_env": str(settings.onboarding_vlm.api_key_env),
+            "gemini_batch_size": int(settings.onboarding_vlm.batch_size),
+            "gemini_retry_attempts": int(settings.onboarding_vlm.gemini_retry_attempts),
+            "gemini_retry_backoff_seconds": float(settings.onboarding_vlm.gemini_retry_backoff_seconds),
+            "detector_conf_for_auto_label": float(settings.onboarding_vlm.detector_conf_for_auto_label),
+            "failure_mode": str(settings.onboarding_vlm.failure_mode),
+            "auto_after_trust": bool(settings.onboarding_vlm.auto_after_trust),
             "target_frames": 150,
             "blur_min": 4.0,
             "dedupe_sim": 0.98,
@@ -505,7 +600,10 @@ async def ui_sku_append_train(
     )
     store.update_onboarding_session(session["session_id"], latest_job_id=job["job_id"])
     _jobs(request).enqueue(job["job_id"])
-    return RedirectResponse(url=f"/ui/onboarding/{session['session_id']}", status_code=303)
+    return RedirectResponse(
+        url=f"/?training_started=1&sku_id={normalized_sku}&session_id={session['session_id']}",
+        status_code=303,
+    )
 
 
 @router.get("/ui/onboarding/{session_id}", response_class=HTMLResponse)
@@ -529,12 +627,22 @@ def api_get_onboarding_session(session_id: str, request: Request) -> dict[str, A
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
     approval_gate = _approval_gate(store, session)
+    seed_gate = _seed_gate(
+        store,
+        session,
+        default_required=int(request.app.state.settings.onboarding_vlm.trust_required_reviews),
+    )
+    auto_status = _auto_mode_status(session)
     return {
         "session": session,
         "summary": _session_summary(session),
+        "seed_gate": seed_gate,
         "approval_gate": approval_gate,
         "quality_gate": _onboarding_quality_gate(session, approval_gate),
         "full_train_ready": store.sku_full_train_ready(session["sku_id"]),
+        "auto_mode": auto_status["auto_mode"],
+        "manual_required": auto_status["manual_required"],
+        "manual_reason": auto_status["manual_reason"],
     }
 
 
@@ -553,6 +661,7 @@ def api_get_onboarding_frame(session_id: str, frame_name: str, request: Request)
 @router.post("/api/onboarding/{session_id}/labels")
 def api_save_onboarding_label(session_id: str, payload: OnboardingLabelRequest, request: Request) -> dict[str, Any]:
     store = _store(request)
+    settings = request.app.state.settings
     session = store.get_onboarding_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
@@ -583,19 +692,105 @@ def api_save_onboarding_label(session_id: str, payload: OnboardingLabelRequest, 
             boxes=boxes,
         )
         session = store.update_onboarding_session(session_id, seed_candidates=seed) or session
+        reviewed_seed = sum(
+            1
+            for item in session.get("seed_candidates", [])
+            if item.get("status") in {"positive", "negative"}
+        )
+        metadata = store.get_sku_metadata(sku)
+        if reviewed_seed > int(metadata.get("trust_review_count", 0)):
+            store.update_sku_metadata(sku, {"trust_review_count": reviewed_seed})
 
-    return {"ok": True, "summary": _session_summary(session)}
+    auto_started = False
+    auto_job_id: str | None = None
+    if payload.stage == "seed" and session.get("state") == "seed_labeling":
+        seed_gate = _seed_gate(
+            store,
+            session,
+            default_required=int(settings.onboarding_vlm.trust_required_reviews),
+        )
+        if seed_gate["auto_start"] and seed_gate["enforced"] and seed_gate["reviewed"] >= seed_gate["required"]:
+            latest_job = store.get_ui_job(str(session.get("latest_job_id"))) if session.get("latest_job_id") else None
+            latest_payload = latest_job.get("payload", {}) if latest_job is not None else {}
+            already_started = (
+                latest_job is not None
+                and latest_job.get("type") == "train_stage1"
+                and latest_job.get("status") in {"queued", "running", "waiting_user", "succeeded"}
+            )
+            if not already_started:
+                stage1_job = store.create_ui_job(
+                    sku_id=session["sku_id"],
+                    job_type="train_stage1",
+                    status="queued",
+                    step="train_stage1",
+                    progress=0.0,
+                    message="Queued stage1 training (auto-start)",
+                    payload={
+                        "session_id": session_id,
+                        "object_description": str(latest_payload.get("object_description") or session["sku_id"]),
+                        "vlm_enabled": bool(latest_payload.get("vlm_enabled", settings.onboarding_vlm.enabled)),
+                        "required_approval_count": int(
+                            latest_payload.get(
+                                "required_approval_count",
+                                settings.onboarding_vlm.initial_auto_approval_count,
+                            )
+                        ),
+                        "sections": int(latest_payload.get("sections", 6)),
+                        "gemini_model": str(latest_payload.get("gemini_model", settings.onboarding_vlm.model)),
+                        "gemini_api_key_env": str(
+                            latest_payload.get("gemini_api_key_env", settings.onboarding_vlm.api_key_env)
+                        ),
+                        "gemini_batch_size": int(
+                            latest_payload.get("gemini_batch_size", settings.onboarding_vlm.batch_size)
+                        ),
+                        "gemini_retry_attempts": int(
+                            latest_payload.get("gemini_retry_attempts", settings.onboarding_vlm.gemini_retry_attempts)
+                        ),
+                        "gemini_retry_backoff_seconds": float(
+                            latest_payload.get(
+                                "gemini_retry_backoff_seconds",
+                                settings.onboarding_vlm.gemini_retry_backoff_seconds,
+                            )
+                        ),
+                        "max_proposals_per_frame": int(
+                            latest_payload.get("max_proposals_per_frame", settings.onboarding_vlm.max_boxes_approval)
+                        ),
+                        "detector_conf_for_auto_label": float(
+                            latest_payload.get(
+                                "detector_conf_for_auto_label",
+                                settings.onboarding_vlm.detector_conf_for_auto_label,
+                            )
+                        ),
+                    },
+                )
+                session = store.update_onboarding_session(
+                    session_id,
+                    state="train_stage1",
+                    latest_job_id=stage1_job["job_id"],
+                ) or session
+                _jobs(request).enqueue(stage1_job["job_id"])
+                auto_started = True
+                auto_job_id = stage1_job["job_id"]
+
+    return {
+        "ok": True,
+        "summary": _session_summary(session),
+        "auto_started": auto_started,
+        "auto_job_id": auto_job_id,
+    }
 
 
 @router.post("/api/onboarding/{session_id}/seed/complete")
 def api_onboarding_seed_complete(session_id: str, request: Request) -> dict[str, Any]:
     store = _store(request)
+    settings = request.app.state.settings
     session = store.get_onboarding_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
     if session.get("state") != "seed_labeling":
         raise HTTPException(status_code=422, detail="Stage1 can only be started from seed_labeling state")
-    approve_per_bin = 4 if str(session.get("mode")) == "milestone" else 5
+    latest_job = store.get_ui_job(str(session.get("latest_job_id"))) if session.get("latest_job_id") else None
+    latest_payload = latest_job.get("payload", {}) if latest_job is not None else {}
     job = store.create_ui_job(
         sku_id=session["sku_id"],
         job_type="train_stage1",
@@ -605,9 +800,36 @@ def api_onboarding_seed_complete(session_id: str, request: Request) -> dict[str,
         message="Queued stage1 training",
         payload={
             "session_id": session_id,
-            "approve_per_bin": approve_per_bin,
-            "conf_propose": 0.03,
-            "max_proposals_per_frame": 4,
+            "object_description": str(latest_payload.get("object_description") or session["sku_id"]),
+            "vlm_enabled": bool(latest_payload.get("vlm_enabled", settings.onboarding_vlm.enabled)),
+            "required_approval_count": int(
+                latest_payload.get(
+                    "required_approval_count",
+                    settings.onboarding_vlm.initial_auto_approval_count,
+                )
+            ),
+            "sections": int(latest_payload.get("sections", 6)),
+            "gemini_model": str(latest_payload.get("gemini_model", settings.onboarding_vlm.model)),
+            "gemini_api_key_env": str(latest_payload.get("gemini_api_key_env", settings.onboarding_vlm.api_key_env)),
+            "gemini_batch_size": int(latest_payload.get("gemini_batch_size", settings.onboarding_vlm.batch_size)),
+            "gemini_retry_attempts": int(
+                latest_payload.get("gemini_retry_attempts", settings.onboarding_vlm.gemini_retry_attempts)
+            ),
+            "gemini_retry_backoff_seconds": float(
+                latest_payload.get(
+                    "gemini_retry_backoff_seconds",
+                    settings.onboarding_vlm.gemini_retry_backoff_seconds,
+                )
+            ),
+            "max_proposals_per_frame": int(
+                latest_payload.get("max_proposals_per_frame", settings.onboarding_vlm.max_boxes_approval)
+            ),
+            "detector_conf_for_auto_label": float(
+                latest_payload.get(
+                    "detector_conf_for_auto_label",
+                    settings.onboarding_vlm.detector_conf_for_auto_label,
+                )
+            ),
         },
     )
     session = store.update_onboarding_session(
@@ -681,6 +903,24 @@ def api_onboarding_approvals_complete(session_id: str, request: Request) -> dict
     ) or session
     _jobs(request).enqueue(job["job_id"])
     return {"ok": True, "job": job, "summary": _session_summary(session)}
+
+
+@router.post("/api/onboarding/{session_id}/manual/enter")
+def api_onboarding_manual_enter(session_id: str, request: Request) -> dict[str, Any]:
+    store = _store(request)
+    session = store.get_onboarding_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Onboarding session not found")
+
+    context = dict(session.get("session_context", {}) or {})
+    if session.get("state") == "manual_required":
+        context["manual_fallback_reason"] = context.get("manual_fallback_reason") or "manual_entry_requested"
+    updated = store.update_onboarding_session(
+        session_id,
+        state="approval_labeling",
+        session_context=context,
+    ) or session
+    return {"ok": True, "summary": _session_summary(updated), "session": updated}
 
 
 @router.post("/ui/sku/{sku_id}/train/full", response_class=HTMLResponse)

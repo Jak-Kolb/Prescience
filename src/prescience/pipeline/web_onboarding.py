@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -37,9 +39,41 @@ from prescience.training.state import (
     train_state_path_for_labels,
 )
 from prescience.training.strategy import dynamic_quick_epochs, resolve_onboarding_training_config
+from prescience.vision.vlm_labeler import GeminiBatchResult, GeminiBox, GeminiLabeler, GeminiLabelerError
 
 
 VERSION_DIR_PATTERN_TEMPLATE = r"^{sku}_v(\d+)$"
+
+
+@dataclass
+class FrameProposal:
+    """Detector proposal for one frame."""
+
+    frame_name: str
+    boxes: list[dict[str, int]] = field(default_factory=list)
+
+
+@dataclass
+class ValidationResult:
+    """Gemini validation decisions over detector proposals."""
+
+    frame_results: list[dict[str, Any]] = field(default_factory=list)
+    accepted: int = 0
+    adjusted: int = 0
+    rejected_negative: int = 0
+    uncertain: int = 0
+
+
+@dataclass
+class AutoLabelSummary:
+    """Outcome of fully automatic stage2 labeling set creation."""
+
+    total: int
+    accepted: int
+    adjusted: int
+    rejected_negative: int
+    uncertain: int
+    decisions: list[dict[str, Any]]
 
 
 def _paths_for_sku(sku: str) -> tuple[Path, Path, Path]:
@@ -121,6 +155,157 @@ def _pick_evenly(section_paths: list[Path], k: int, selectable: set[str]) -> lis
         return available
     idxs = np.linspace(0, len(available) - 1, num=k, dtype=int).tolist()
     return [available[i] for i in idxs]
+
+
+def _section_target_counts(total: int, sections: int) -> list[int]:
+    if sections <= 0:
+        raise ValueError("sections must be > 0")
+    base = total // sections
+    remainder = total % sections
+    return [base + (1 if idx < remainder else 0) for idx in range(sections)]
+
+
+def _select_evenly_binned_targets(
+    sectioned_paths: list[list[Path]],
+    *,
+    selectable: set[str],
+    target_count: int,
+) -> list[Path]:
+    if target_count <= 0:
+        return []
+
+    counts = _section_target_counts(target_count, max(1, len(sectioned_paths)))
+    selected: list[Path] = []
+    selected_names: set[str] = set()
+    for idx, section in enumerate(sectioned_paths):
+        for image in _pick_evenly(section, counts[idx], selectable):
+            if image.name in selected_names:
+                continue
+            selected.append(image)
+            selected_names.add(image.name)
+
+    if len(selected) >= target_count:
+        return selected[:target_count]
+
+    remaining = target_count - len(selected)
+    all_selectable = [image for section in sectioned_paths for image in section if image.name in selectable]
+    leftovers = [image for image in all_selectable if image.name not in selected_names]
+    if leftovers:
+        idxs = np.linspace(0, len(leftovers) - 1, num=min(remaining, len(leftovers)), dtype=int).tolist()
+        for idx in idxs:
+            selected.append(leftovers[idx])
+    return selected[:target_count]
+
+
+def _gemini_api_key_from_env(api_key_env: str) -> tuple[str | None, str | None]:
+    if not api_key_env.strip():
+        return None, "missing_api_key_env_name"
+    value = os.getenv(api_key_env, "").strip()
+    if not value:
+        return None, f"missing_api_key_env:{api_key_env}"
+    return value, None
+
+
+def _build_gemini_labeler(
+    *,
+    gemini_model: str,
+    gemini_api_key_env: str,
+) -> tuple[GeminiLabeler | None, str | None]:
+    api_key, env_error = _gemini_api_key_from_env(gemini_api_key_env)
+    if env_error is not None:
+        return None, env_error
+    try:
+        return GeminiLabeler(api_key=api_key or "", model_name=gemini_model), None
+    except GeminiLabelerError as exc:
+        return None, str(exc)
+
+
+def _boxes_to_yolo(
+    *,
+    boxes: list[dict[str, int]],
+    width: int,
+    height: int,
+) -> list[tuple[float, float, float, float]]:
+    return [
+        _xyxy_to_yolo_norm(
+            int(box["x1"]),
+            int(box["y1"]),
+            int(box["x2"]),
+            int(box["y2"]),
+            width,
+            height,
+        )
+        for box in boxes
+    ]
+
+
+def _gemini_batch_proposals_for_images(
+    *,
+    image_paths: list[Path],
+    object_description: str,
+    max_boxes: int,
+    enabled: bool,
+    gemini_model: str,
+    gemini_api_key_env: str,
+    batch_size: int,
+) -> tuple[dict[str, list[dict[str, int]]], dict[str, str]]:
+    proposals_by_name: dict[str, list[dict[str, int]]] = {path.name: [] for path in image_paths}
+    errors_by_name: dict[str, str] = {}
+    if not enabled:
+        for path in image_paths:
+            errors_by_name[path.name] = "gemini_disabled"
+        return proposals_by_name, errors_by_name
+    labeler, labeler_error = _build_gemini_labeler(
+        gemini_model=gemini_model,
+        gemini_api_key_env=gemini_api_key_env,
+    )
+
+    if labeler is None:
+        fallback_error = labeler_error or "gemini_unavailable"
+        for path in image_paths:
+            errors_by_name[path.name] = fallback_error
+        return proposals_by_name, errors_by_name
+
+    safe_batch_size = max(1, int(batch_size))
+    for start in range(0, len(image_paths), safe_batch_size):
+        chunk = image_paths[start : start + safe_batch_size]
+        try:
+            result: GeminiBatchResult = labeler.propose_batch(
+                image_paths=chunk,
+                object_description=object_description,
+                max_boxes=max_boxes,
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = f"gemini_batch_failed: {exc}"
+            for path in chunk:
+                errors_by_name[path.name] = message
+            continue
+
+        for path in chunk:
+            proposals = []
+            image = cv2.imread(str(path))
+            if image is None:
+                errors_by_name[path.name] = "image_load_failed"
+                proposals_by_name[path.name] = []
+                continue
+            height, width = image.shape[:2]
+            for box in result.boxes_by_image.get(path.name, []):
+                if not isinstance(box, GeminiBox):
+                    continue
+                x1, y1, x2, y2 = box.to_xyxy_pixels(width=width, height=height)
+                proposals.append(
+                    {
+                        "x1": int(x1),
+                        "y1": int(y1),
+                        "x2": int(x2),
+                        "y2": int(y2),
+                    }
+                )
+            proposals_by_name[path.name] = proposals
+            if path.name in result.errors_by_image:
+                errors_by_name[path.name] = result.errors_by_image[path.name]
+
+    return proposals_by_name, errors_by_name
 
 
 def _append_history_new_files(
@@ -251,12 +436,107 @@ def prepare_seed_candidates(
         overwrite=overwrite,
         append_video_path=append_video_path,
     )
+    if append_video_path and not selectable:
+        return []
     section_source = [image for image in images if image.name in selectable] or images
     sectioned = _split_into_sections(section_source, sections)
     candidates: list[dict[str, Any]] = []
     for section in sectioned:
         for image in _pick_evenly(section, manual_per_section, selectable):
             candidates.append({"frame_name": image.name, "status": "pending", "boxes": []})
+    return candidates
+
+
+def prepare_seed_candidates_with_gemini(
+    sku: str,
+    *,
+    object_description: str,
+    enabled: bool = True,
+    target_count: int = 24,
+    sections: int = 6,
+    overwrite: bool = False,
+    append_video_path: str | None = None,
+    gemini_model: str = "gemini-3-pro-preview",
+    gemini_api_key_env: str = "GEMINI_API_KEY",
+    batch_size: int = 24,
+    max_proposals_per_frame: int = 4,
+) -> list[dict[str, Any]]:
+    """Prepare seed candidates with Gemini prelabels and persist auto-label files."""
+    frames_dir, labels_dir, manifest_path, manifest, images = _manifest_and_images(sku)
+    processable_names = {
+        image.name
+        for image in images
+        if should_process(image.name, overwrite, set(manifest.records.keys()))
+    }
+    selectable = _select_processable_image_names(
+        images=images,
+        processable_names=processable_names,
+        frames_dir=frames_dir,
+        overwrite=overwrite,
+        append_video_path=append_video_path,
+    )
+    if append_video_path and not selectable:
+        return []
+    section_source = [image for image in images if image.name in selectable] or images
+    sectioned = _split_into_sections(section_source, sections)
+    selected_images = _select_evenly_binned_targets(
+        sectioned_paths=sectioned,
+        selectable=selectable if selectable else {image.name for image in section_source},
+        target_count=target_count,
+    )
+    if not selected_images:
+        return []
+
+    proposals_by_name, errors_by_name = _gemini_batch_proposals_for_images(
+        image_paths=selected_images,
+        object_description=object_description,
+        max_boxes=max_proposals_per_frame,
+        enabled=enabled,
+        gemini_model=gemini_model,
+        gemini_api_key_env=gemini_api_key_env,
+        batch_size=batch_size,
+    )
+
+    candidates: list[dict[str, Any]] = []
+    for image_path in selected_images:
+        proposals = proposals_by_name.get(image_path.name, [])
+        reason = errors_by_name.get(image_path.name, "")
+        image = cv2.imread(str(image_path))
+        label_path = _label_path_for_image(labels_dir, image_path)
+
+        if image is None:
+            reason = reason or "image_load_failed"
+            proposals = []
+            _write_negative_label(label_path)
+            auto_status = "negative"
+        elif proposals:
+            height, width = image.shape[:2]
+            yolo_boxes = _boxes_to_yolo(
+                boxes=proposals,
+                width=width,
+                height=height,
+            )
+            _write_positive_labels(label_path=label_path, class_id=0, yolo_boxes=yolo_boxes)
+            auto_status = "positive"
+        else:
+            _write_negative_label(label_path)
+            auto_status = "negative"
+
+        upsert_record(manifest, image_path.name, auto_status, str(label_path))
+        candidates.append(
+            {
+                "frame_name": image_path.name,
+                "status": "pending",
+                "boxes": proposals.copy(),
+                "proposals": proposals,
+                "source": "gemini_seed",
+                "needs_review": bool(reason),
+                "reason": reason,
+                "auto_label_status": auto_status,
+            }
+        )
+
+    save_manifest(manifest_path, manifest)
     return candidates
 
 
@@ -338,6 +618,244 @@ def _collect_proposed_boxes_xyxy(
     return out
 
 
+def _box_iou(a: dict[str, int], b: dict[str, int]) -> float:
+    x_left = max(int(a["x1"]), int(b["x1"]))
+    y_top = max(int(a["y1"]), int(b["y1"]))
+    x_right = min(int(a["x2"]), int(b["x2"]))
+    y_bottom = min(int(a["y2"]), int(b["y2"]))
+    inter_w = max(0, x_right - x_left)
+    inter_h = max(0, y_bottom - y_top)
+    inter = float(inter_w * inter_h)
+    if inter <= 0:
+        return 0.0
+    area_a = float(max(0, int(a["x2"]) - int(a["x1"])) * max(0, int(a["y2"]) - int(a["y1"])))
+    area_b = float(max(0, int(b["x2"]) - int(b["x1"])) * max(0, int(b["y2"]) - int(b["y1"])))
+    union = area_a + area_b - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def build_detector_candidates(
+    sku: str,
+    *,
+    model_path: str,
+    target_count: int,
+    conf: float = 0.02,
+    imgsz: int = 640,
+    sections: int = 6,
+    overwrite: bool = False,
+    append_video_path: str | None = None,
+    max_proposals_per_frame: int = 8,
+    pick_largest: bool = False,
+) -> list[FrameProposal]:
+    """Build detector proposals for stage2 auto-labeling candidates."""
+    frames_dir, _labels_dir, _manifest_path, manifest, images = _manifest_and_images(sku)
+    processable_names = {
+        image.name
+        for image in images
+        if should_process(image.name, overwrite, set(manifest.records.keys()))
+    }
+    selectable = _select_processable_image_names(
+        images=images,
+        processable_names=processable_names,
+        frames_dir=frames_dir,
+        overwrite=overwrite,
+        append_video_path=append_video_path,
+    )
+    if append_video_path and not selectable:
+        return []
+    section_source = [image for image in images if image.name in selectable] or images
+    sectioned = _split_into_sections(section_source, sections)
+    selected_images = _select_evenly_binned_targets(
+        sectioned_paths=sectioned,
+        selectable=selectable if selectable else {image.name for image in section_source},
+        target_count=target_count,
+    )
+    if not selected_images:
+        return []
+
+    model = YOLO(model_path)
+    proposals: list[FrameProposal] = []
+    for image_path in selected_images:
+        image = cv2.imread(str(image_path))
+        if image is None:
+            proposals.append(FrameProposal(frame_name=image_path.name, boxes=[]))
+            continue
+        results = model.predict(
+            source=image,
+            conf=conf,
+            imgsz=imgsz,
+            max_det=max_proposals_per_frame,
+            verbose=False,
+        )
+        result = results[0]
+        boxes: list[dict[str, int]] = []
+        if result.boxes is not None and len(result.boxes) > 0:
+            boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+            confs = result.boxes.conf.cpu().numpy()
+            boxes = _collect_proposed_boxes_xyxy(
+                boxes_xyxy=boxes_xyxy,
+                confidences=confs,
+                pick_largest=pick_largest,
+                max_boxes=max_proposals_per_frame,
+            )
+        proposals.append(FrameProposal(frame_name=image_path.name, boxes=boxes))
+    return proposals
+
+
+def validate_detector_candidates_with_gemini(
+    *,
+    sku: str,
+    detector_candidates: list[FrameProposal],
+    object_description: str,
+    enabled: bool,
+    gemini_model: str,
+    gemini_api_key_env: str,
+    batch_size: int,
+    max_boxes_approval: int,
+) -> ValidationResult:
+    """Validate detector proposals against Gemini and produce per-frame decisions."""
+    if not detector_candidates:
+        return ValidationResult()
+
+    frames_dir = Path(f"data/derived/frames/{sku}/frames")
+    image_paths = [frames_dir / candidate.frame_name for candidate in detector_candidates]
+    proposals_by_name, errors_by_name = _gemini_batch_proposals_for_images(
+        image_paths=image_paths,
+        object_description=object_description,
+        max_boxes=max_boxes_approval,
+        enabled=enabled,
+        gemini_model=gemini_model,
+        gemini_api_key_env=gemini_api_key_env,
+        batch_size=batch_size,
+    )
+
+    result = ValidationResult()
+    for candidate in detector_candidates:
+        detector_boxes = [dict(box) for box in candidate.boxes]
+        gemini_boxes = [dict(box) for box in proposals_by_name.get(candidate.frame_name, [])]
+        error = errors_by_name.get(candidate.frame_name, "")
+
+        decision = "accept"
+        final_boxes = detector_boxes
+        reason = "detector_confirmed"
+
+        if error:
+            decision = "uncertain"
+            final_boxes = detector_boxes
+            reason = error
+            result.uncertain += 1
+        elif not detector_boxes and not gemini_boxes:
+            decision = "reject_negative"
+            final_boxes = []
+            reason = "both_empty"
+            result.rejected_negative += 1
+        elif detector_boxes and not gemini_boxes:
+            decision = "reject_negative"
+            final_boxes = []
+            reason = "gemini_rejected_detector"
+            result.rejected_negative += 1
+        elif not detector_boxes and gemini_boxes:
+            decision = "adjust"
+            final_boxes = gemini_boxes
+            reason = "gemini_added_boxes"
+            result.adjusted += 1
+        else:
+            max_iou = 0.0
+            for det_box in detector_boxes:
+                for gem_box in gemini_boxes:
+                    max_iou = max(max_iou, _box_iou(det_box, gem_box))
+            close_count = abs(len(detector_boxes) - len(gemini_boxes)) <= 1
+            if max_iou >= 0.5 and close_count:
+                decision = "accept"
+                final_boxes = detector_boxes
+                reason = "iou_match"
+                result.accepted += 1
+            else:
+                decision = "adjust"
+                final_boxes = gemini_boxes
+                reason = f"gemini_adjusted_iou_{max_iou:.2f}"
+                result.adjusted += 1
+
+        frame_result = {
+            "frame_name": candidate.frame_name,
+            "decision": decision,
+            "final_boxes": final_boxes,
+            "detector_boxes": detector_boxes,
+            "gemini_boxes": gemini_boxes,
+            "reason": reason,
+        }
+        result.frame_results.append(frame_result)
+
+    return result
+
+
+def auto_label_for_stage2(
+    sku: str,
+    *,
+    model_path: str,
+    object_description: str,
+    target_count: int,
+    conf: float = 0.02,
+    imgsz: int = 640,
+    sections: int = 6,
+    overwrite: bool = False,
+    append_video_path: str | None = None,
+    enabled: bool = True,
+    gemini_model: str = "gemini-3-pro-preview",
+    gemini_api_key_env: str = "GEMINI_API_KEY",
+    batch_size: int = 24,
+    max_boxes_approval: int = 8,
+    class_id: int = 0,
+) -> AutoLabelSummary:
+    """Auto-label stage2 frames via detector proposals validated by Gemini."""
+    detector_candidates = build_detector_candidates(
+        sku=sku,
+        model_path=model_path,
+        target_count=target_count,
+        conf=conf,
+        imgsz=imgsz,
+        sections=sections,
+        overwrite=overwrite,
+        append_video_path=append_video_path,
+        max_proposals_per_frame=max_boxes_approval,
+    )
+    validation = validate_detector_candidates_with_gemini(
+        sku=sku,
+        detector_candidates=detector_candidates,
+        object_description=object_description,
+        enabled=enabled,
+        gemini_model=gemini_model,
+        gemini_api_key_env=gemini_api_key_env,
+        batch_size=batch_size,
+        max_boxes_approval=max_boxes_approval,
+    )
+
+    for item in validation.frame_results:
+        decision = str(item["decision"])
+        if decision == "uncertain":
+            continue
+        status = "positive" if item["final_boxes"] else "negative"
+        save_browser_label(
+            sku=sku,
+            frame_name=str(item["frame_name"]),
+            status=status,
+            boxes=[dict(box) for box in item["final_boxes"]],
+            class_id=class_id,
+            allow_negatives=True,
+        )
+
+    return AutoLabelSummary(
+        total=len(validation.frame_results),
+        accepted=validation.accepted,
+        adjusted=validation.adjusted,
+        rejected_negative=validation.rejected_negative,
+        uncertain=validation.uncertain,
+        decisions=validation.frame_results,
+    )
+
+
 def prepare_approval_candidates(
     sku: str,
     *,
@@ -345,7 +863,7 @@ def prepare_approval_candidates(
     approve_per_section: int = 5,
     sections: int = 6,
     overwrite: bool = False,
-    conf: float = 0.03,
+    conf: float = 0.02,
     imgsz: int = 640,
     pick_largest: bool = False,
     max_proposals_per_frame: int = 8,
@@ -404,6 +922,75 @@ def prepare_approval_candidates(
                     "proposals": proposals,
                 }
             )
+
+    return candidates
+
+
+def prepare_approval_candidates_with_gemini(
+    sku: str,
+    *,
+    object_description: str,
+    target_count: int,
+    enabled: bool = True,
+    sections: int = 6,
+    overwrite: bool = False,
+    gemini_model: str = "gemini-3-pro-preview",
+    gemini_api_key_env: str = "GEMINI_API_KEY",
+    batch_size: int = 24,
+    max_proposals_per_frame: int = 8,
+    append_video_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Prepare approval candidates from Gemini proposals (no label writes)."""
+    frames_dir, labels_dir, manifest_path, manifest, images = _manifest_and_images(sku)
+    _ = labels_dir
+    _ = manifest_path
+    processable_names = {
+        image.name
+        for image in images
+        if should_process(image.name, overwrite, set(manifest.records.keys()))
+    }
+    selectable = _select_processable_image_names(
+        images=images,
+        processable_names=processable_names,
+        frames_dir=frames_dir,
+        overwrite=overwrite,
+        append_video_path=append_video_path,
+    )
+    section_source = [image for image in images if image.name in selectable] or images
+    sectioned = _split_into_sections(section_source, sections)
+    selected_images = _select_evenly_binned_targets(
+        sectioned_paths=sectioned,
+        selectable=selectable if selectable else {image.name for image in section_source},
+        target_count=target_count,
+    )
+    if not selected_images:
+        return []
+
+    proposals_by_name, errors_by_name = _gemini_batch_proposals_for_images(
+        image_paths=selected_images,
+        object_description=object_description,
+        max_boxes=max_proposals_per_frame,
+        enabled=enabled,
+        gemini_model=gemini_model,
+        gemini_api_key_env=gemini_api_key_env,
+        batch_size=batch_size,
+    )
+
+    candidates: list[dict[str, Any]] = []
+    for image_path in selected_images:
+        proposals = proposals_by_name.get(image_path.name, [])
+        reason = errors_by_name.get(image_path.name, "")
+        candidates.append(
+            {
+                "frame_name": image_path.name,
+                "status": "pending",
+                "boxes": proposals.copy(),
+                "proposals": proposals,
+                "source": "gemini_approval",
+                "needs_review": bool(reason),
+                "reason": reason,
+            }
+        )
 
     return candidates
 
@@ -480,7 +1067,7 @@ def train_stage1_for_session(
             base_model=base_model,
             imgsz=resolved.imgsz,
             epochs=effective_epochs,
-            conf=0.01,
+            conf=0.02,
             patience=resolved.patience,
             freeze=effective_freeze,
             workers=resolved.workers,
@@ -558,7 +1145,7 @@ def train_stage2_for_session(
             base_model=stage1_model_path,
             imgsz=resolved.imgsz,
             epochs=effective_epochs,
-            conf=0.01,
+            conf=0.02,
             patience=resolved.patience,
             freeze=effective_freeze,
             workers=resolved.workers,

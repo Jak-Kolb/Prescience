@@ -236,3 +236,125 @@ def test_prepare_approval_candidates_from_append_batch_yields_full_target_count(
     )
     assert len(candidates) == 30
     assert all("000151.jpg" <= item["frame_name"] <= "000180.jpg" for item in candidates)
+
+
+def test_prepare_seed_candidates_with_gemini_writes_labels(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sku = "can1_test"
+    frames = Path(f"data/derived/frames/{sku}/frames")
+    for idx in range(1, 31):
+        _write_frame(frames / f"{idx:06d}.jpg")
+
+    def _fake_batch(**kwargs):  # noqa: ANN003
+        image_paths = kwargs["image_paths"]
+        proposals: dict[str, list[dict[str, int]]] = {}
+        errors: dict[str, str] = {}
+        for i, path in enumerate(image_paths):
+            if i % 2 == 0:
+                proposals[path.name] = [{"x1": 10, "y1": 12, "x2": 60, "y2": 70}]
+            else:
+                proposals[path.name] = []
+        return proposals, errors
+
+    monkeypatch.setattr(web, "_gemini_batch_proposals_for_images", _fake_batch)
+
+    candidates = web.prepare_seed_candidates_with_gemini(
+        sku=sku,
+        object_description=sku,
+        target_count=24,
+        max_proposals_per_frame=4,
+    )
+    assert len(candidates) == 24
+    assert all(item["status"] == "pending" for item in candidates)
+
+    labels = Path(f"data/derived/labels/{sku}/labels")
+    positive = 0
+    negative = 0
+    for candidate in candidates:
+        text = (labels / f"{Path(candidate['frame_name']).stem}.txt").read_text(encoding="utf-8")
+        if text.strip():
+            positive += 1
+        else:
+            negative += 1
+    assert positive == 12
+    assert negative == 12
+
+
+def test_prepare_approval_candidates_with_gemini_uses_append_batch_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sku = "can1_test"
+    frames = Path(f"data/derived/frames/{sku}/frames")
+    for idx in range(1, 61):
+        _write_frame(frames / f"{idx:06d}.jpg")
+
+    latest_video = f"data/raw/videos/{sku}/{sku}_2.MOV"
+    meta = {
+        "sku": sku,
+        "append_mode": True,
+        "append_history": [
+            {
+                "video_path": f"data/raw/videos/{sku}/{sku}_1.MOV",
+                "new_files": [f"{idx:06d}.jpg" for idx in range(1, 31)],
+            },
+            {
+                "video_path": latest_video,
+                "new_files": [f"{idx:06d}.jpg" for idx in range(31, 61)],
+            },
+        ],
+    }
+    (frames.parent / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def _fake_batch(**kwargs):  # noqa: ANN003
+        proposals = {path.name: [{"x1": 5, "y1": 5, "x2": 25, "y2": 30}] for path in kwargs["image_paths"]}
+        return proposals, {}
+
+    monkeypatch.setattr(web, "_gemini_batch_proposals_for_images", _fake_batch)
+    candidates = web.prepare_approval_candidates_with_gemini(
+        sku=sku,
+        object_description=sku,
+        target_count=30,
+        append_video_path=latest_video,
+    )
+    assert len(candidates) == 30
+    assert all("000031.jpg" <= item["frame_name"] <= "000060.jpg" for item in candidates)
+
+
+def test_validate_detector_candidates_with_gemini_decisions(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sku = "can1_test"
+    frames = Path(f"data/derived/frames/{sku}/frames")
+    for idx in range(1, 5):
+        _write_frame(frames / f"{idx:06d}.jpg")
+
+    detector = [
+        web.FrameProposal(frame_name="000001.jpg", boxes=[{"x1": 10, "y1": 10, "x2": 40, "y2": 40}]),
+        web.FrameProposal(frame_name="000002.jpg", boxes=[{"x1": 8, "y1": 8, "x2": 18, "y2": 18}]),
+        web.FrameProposal(frame_name="000003.jpg", boxes=[]),
+        web.FrameProposal(frame_name="000004.jpg", boxes=[{"x1": 1, "y1": 1, "x2": 5, "y2": 5}]),
+    ]
+
+    def _fake_batch(**kwargs):  # noqa: ANN003
+        names = [path.name for path in kwargs["image_paths"]]
+        proposals = {name: [] for name in names}
+        errors = {}
+        proposals["000001.jpg"] = [{"x1": 11, "y1": 11, "x2": 39, "y2": 39}]  # accept (high IoU)
+        proposals["000002.jpg"] = [{"x1": 60, "y1": 60, "x2": 80, "y2": 80}]  # adjust
+        proposals["000003.jpg"] = []  # reject_negative
+        errors["000004.jpg"] = "missing_api_key_env:GEMINI_API_KEY"  # uncertain
+        return proposals, errors
+
+    monkeypatch.setattr(web, "_gemini_batch_proposals_for_images", _fake_batch)
+    result = web.validate_detector_candidates_with_gemini(
+        sku=sku,
+        detector_candidates=detector,
+        object_description=sku,
+        enabled=True,
+        gemini_model="gemini-3-pro-preview",
+        gemini_api_key_env="GEMINI_API_KEY",
+        batch_size=24,
+        max_boxes_approval=8,
+    )
+    assert result.accepted == 1
+    assert result.adjusted == 1
+    assert result.rejected_negative == 1
+    assert result.uncertain == 1

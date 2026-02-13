@@ -9,6 +9,33 @@
   </head>
   <body>
     <main class="container">
+      <div id="training-overlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h2>Training your personal model</h2>
+          <p id="overlay-text" class="muted">Your job is running in the background.</p>
+        </div>
+      </div>
+      <div id="seed-review-overlay" class="overlay hidden">
+        <div class="overlay-card overlay-seed">
+          <div class="topbar">
+            <h2 id="seed-review-title">Waiting For User Approval</h2>
+            <button id="seed-review-close" class="ghost">Close</button>
+          </div>
+          <p id="seed-review-status" class="muted">Review 3 frames to continue onboarding.</p>
+          <div class="seed-canvas-wrap">
+            <canvas id="seed-review-canvas"></canvas>
+          </div>
+          <div id="seed-review-frame" class="muted"></div>
+          <div class="inline-actions">
+            <button id="seed-approve-positive">Approve Positive</button>
+            <button id="seed-approve-negative" class="ghost">Mark Negative</button>
+            <button id="seed-undo" class="ghost">Undo Box</button>
+            <button id="seed-clear" class="ghost">Clear Boxes</button>
+            <button id="seed-next" class="ghost">Next Frame</button>
+          </div>
+        </div>
+      </div>
+
       <header class="topbar">
         <h1>Prescience</h1>
         <p>Line <code id="line-id">{{ line_id }}</code> | Pairing required: <code>{{ pairing_required }}</code></p>
@@ -42,6 +69,7 @@
           </p>
           <form action="/ui/sku/enroll" method="post" enctype="multipart/form-data" class="stack-form">
             <input type="text" name="sku" placeholder="sku name (e.g. chickfila_sauce)" required />
+            <input type="text" name="object_description" placeholder="product description (optional)" />
             <input type="file" name="video" accept="video/*" required />
             <button type="submit">Start Enrollment</button>
           </form>
@@ -70,6 +98,9 @@
                   <span class="pill">{{ sku.latest_version or "no model yet" }}</span>
                 </div>
                 <div class="muted">Versions: {% if sku.model_versions %}{{ sku.model_versions|join(", ") }}{% else %}none{% endif %}</div>
+                <div class="muted">Mode: <span id="sku-mode-{{ sku.sku_id }}">{{ sku.metadata.labeling_mode or "bootstrap_review" }}</span></div>
+                <div class="muted" id="sku-state-{{ sku.sku_id }}">Status: idle</div>
+                <div id="manual-cta-{{ sku.sku_id }}" class="manual-cta"></div>
 
                 <form action="/ui/sku/{{ sku.sku_id }}/append-train" method="post" enctype="multipart/form-data" class="inline-form">
                   <input type="file" name="video" accept="video/*" required />

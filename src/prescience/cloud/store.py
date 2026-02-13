@@ -423,11 +423,93 @@ class CloudStore:
             out = []
             for row in rows:
                 item = dict(row)
-                item["metadata"] = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                raw_metadata = json.loads(item["metadata_json"]) if item.get("metadata_json") else {}
+                item["metadata"] = self._normalize_sku_metadata(raw_metadata)
                 out.append(item)
             return out
         finally:
             conn.close()
+
+    @staticmethod
+    def _default_sku_metadata() -> dict[str, Any]:
+        return {
+            "labeling_mode": "bootstrap_review",
+            "trust_verified_at": None,
+            "trust_review_count": 0,
+            "auto_mode_enabled": False,
+        }
+
+    def _normalize_sku_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        merged = {**self._default_sku_metadata(), **(metadata or {})}
+        mode = str(merged.get("labeling_mode", "bootstrap_review"))
+        if mode not in {"bootstrap_review", "auto_trusted"}:
+            mode = "bootstrap_review"
+        merged["labeling_mode"] = mode
+        merged["auto_mode_enabled"] = bool(merged.get("auto_mode_enabled", False))
+        try:
+            merged["trust_review_count"] = max(0, int(merged.get("trust_review_count", 0)))
+        except (TypeError, ValueError):
+            merged["trust_review_count"] = 0
+        if merged.get("trust_verified_at") in {"", "none", "null"}:
+            merged["trust_verified_at"] = None
+        return merged
+
+    def get_sku(self, sku_id: str) -> dict[str, Any] | None:
+        """Load one SKU row by id."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT * FROM skus WHERE sku_id=?", (sku_id,)).fetchone()
+            if row is None:
+                return None
+            item = dict(row)
+            item["metadata"] = self._normalize_sku_metadata(self._json_load(item.get("metadata_json"), {}))
+            return item
+        finally:
+            conn.close()
+
+    def get_sku_metadata(self, sku_id: str) -> dict[str, Any]:
+        """Load normalized metadata for one SKU."""
+        sku = self.get_sku(sku_id)
+        if sku is None:
+            return self._default_sku_metadata()
+        return self._normalize_sku_metadata(sku.get("metadata"))
+
+    def sku_is_trusted(self, sku_id: str) -> bool:
+        """True when SKU has passed trust gate and auto mode is enabled."""
+        metadata = self.get_sku_metadata(sku_id)
+        return bool(metadata.get("auto_mode_enabled")) and metadata.get("labeling_mode") == "auto_trusted"
+
+    def update_sku_metadata(self, sku_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        """Merge metadata updates into SKU row and return updated row."""
+        current = self.get_sku(sku_id)
+        if current is None:
+            return self.upsert_sku(
+                sku_id=sku_id,
+                name=sku_id,
+                profile_path=f"data/profiles/{sku_id}",
+                threshold=None,
+                metadata=updates,
+            )
+        merged = {**self._normalize_sku_metadata(current.get("metadata")), **updates}
+        return self.upsert_sku(
+            sku_id=sku_id,
+            name=current["name"],
+            profile_path=current.get("profile_path"),
+            threshold=current.get("threshold"),
+            metadata=merged,
+        )
+
+    def mark_sku_trusted(self, sku_id: str, review_count: int) -> dict[str, Any]:
+        """Mark SKU as trusted for full auto labeling."""
+        return self.update_sku_metadata(
+            sku_id,
+            {
+                "labeling_mode": "auto_trusted",
+                "trust_verified_at": self._iso_now(),
+                "trust_review_count": max(0, int(review_count)),
+                "auto_mode_enabled": True,
+            },
+        )
 
     def upsert_sku(
         self,
@@ -439,7 +521,13 @@ class CloudStore:
     ) -> dict[str, Any]:
         """Insert or update SKU metadata."""
         now = self._iso_now()
-        meta_json = json.dumps(metadata or {})
+        current = self.get_sku(sku_id)
+        merged_metadata: dict[str, Any]
+        if current is None:
+            merged_metadata = self._normalize_sku_metadata(metadata or {})
+        else:
+            merged_metadata = self._normalize_sku_metadata({**current.get("metadata", {}), **(metadata or {})})
+        meta_json = json.dumps(merged_metadata)
         conn = self._conn()
         try:
             with conn:
@@ -461,7 +549,7 @@ class CloudStore:
                 "name": name,
                 "profile_path": profile_path,
                 "threshold": threshold,
-                "metadata": metadata or {},
+                "metadata": merged_metadata,
                 "updated_at": now,
             }
         finally:
@@ -616,6 +704,7 @@ class CloudStore:
         state: str,
         seed_candidates: list[dict[str, Any]] | None = None,
         approval_candidates: list[dict[str, Any]] | None = None,
+        session_context: dict[str, Any] | None = None,
         stage1_model_path: str | None = None,
         latest_job_id: str | None = None,
     ) -> dict[str, Any]:
@@ -629,10 +718,10 @@ class CloudStore:
                     """
                     INSERT INTO onboarding_sessions(
                         session_id, sku_id, version_tag, mode, state,
-                        seed_candidates_json, approval_candidates_json, stage1_model_path,
+                        seed_candidates_json, approval_candidates_json, session_context_json, stage1_model_path,
                         latest_job_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id,
@@ -642,6 +731,7 @@ class CloudStore:
                         state,
                         json.dumps(seed_candidates or []),
                         json.dumps(approval_candidates or []),
+                        json.dumps(session_context or {}),
                         stage1_model_path,
                         latest_job_id,
                         now,
@@ -666,6 +756,7 @@ class CloudStore:
             item = dict(row)
             item["seed_candidates"] = self._json_load(item.get("seed_candidates_json"), [])
             item["approval_candidates"] = self._json_load(item.get("approval_candidates_json"), [])
+            item["session_context"] = self._json_load(item.get("session_context_json"), {})
             return item
         finally:
             conn.close()
@@ -677,6 +768,7 @@ class CloudStore:
         state: str | None = None,
         seed_candidates: list[dict[str, Any]] | None = None,
         approval_candidates: list[dict[str, Any]] | None = None,
+        session_context: dict[str, Any] | None = None,
         stage1_model_path: str | None = None,
         latest_job_id: str | None = None,
     ) -> dict[str, Any] | None:
@@ -694,6 +786,7 @@ class CloudStore:
                     SET state=?,
                         seed_candidates_json=?,
                         approval_candidates_json=?,
+                        session_context_json=?,
                         stage1_model_path=?,
                         latest_job_id=?,
                         updated_at=?
@@ -707,6 +800,7 @@ class CloudStore:
                             if approval_candidates is not None
                             else existing["approval_candidates"]
                         ),
+                        json.dumps(session_context if session_context is not None else existing["session_context"]),
                         stage1_model_path if stage1_model_path is not None else existing["stage1_model_path"],
                         latest_job_id if latest_job_id is not None else existing["latest_job_id"],
                         self._iso_now(),
@@ -736,6 +830,7 @@ class CloudStore:
                 item = dict(row)
                 item["seed_candidates"] = self._json_load(item.get("seed_candidates_json"), [])
                 item["approval_candidates"] = self._json_load(item.get("approval_candidates_json"), [])
+                item["session_context"] = self._json_load(item.get("session_context_json"), {})
                 out.append(item)
             return out
         finally:
@@ -747,6 +842,7 @@ class CloudStore:
             "generated_at": self._iso_now(),
             "jobs": self.list_ui_jobs(sku_id=sku_id, limit=50),
             "sessions": self.list_onboarding_sessions(sku_id=sku_id, limit=20),
+            "skus": self.list_skus(),
         }
 
     def list_model_versions_for_sku(self, sku_id: str, models_root: str | Path = "data/models/yolo") -> list[int]:

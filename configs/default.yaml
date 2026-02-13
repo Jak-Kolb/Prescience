@@ -50,3 +50,23 @@ cloud:
     required: false
   heartbeat_timeout_seconds: 90
   sse_retry_ms: 1500
+
+onboarding_vlm:
+  enabled: true
+  model: gemini-3-pro-preview
+  api_key_env: GEMINI_API_KEY
+  batch_size: 24
+  seed_target_count: 24
+  seed_required_reviews: 3
+  initial_approval_target_count: 24
+  append_approval_target_count: 30
+  max_boxes_seed: 4
+  max_boxes_approval: 8
+  trust_required_reviews: 3
+  initial_auto_approval_count: 24
+  append_auto_approval_count: 30
+  gemini_retry_attempts: 3
+  gemini_retry_backoff_seconds: 1.5
+  failure_mode: manual_prompt
+  auto_after_trust: true
+  detector_conf_for_auto_label: 0.02

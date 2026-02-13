@@ -6,10 +6,11 @@ Camera-based end-of-line counting without PLC changes.
 
 - SKU enrollment from short phone video (`show all sides`).
 - Frame extraction with balanced 1/6 timeline coverage.
-- Guided onboarding labeling (manual seeds + model-assisted approvals + negatives).
-  - Manual mode supports multiple boxes per image (draw several, Enter saves all).
-  - Model-assisted approval accepts all proposed boxes (or switch to manual correction).
-  - After appending new videos, labeling focuses on appended-frame candidates by default.
+- Dashboard-first onboarding/retraining with background jobs and SSE progress.
+- Gemini-first labeling:
+  - Initial trust check reviews 3 AI-labeled seed frames.
+  - After trust, stage2 labeling/retraining runs automatically with detector + Gemini validation.
+  - If Gemini is unavailable after retries, UI prompts manual fallback.
 - SKU-specific YOLO detector training with stable `best.pt` output path.
 - Optional embedding profile creation (`resnet18` default, pluggable interface).
 - Edge runtime agent: detect + track + zone crossing count + event emission.
@@ -26,6 +27,12 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+Set your Gemini API key for web onboarding prelabeling:
+
+```bash
+export GEMINI_API_KEY=your_key_here
+```
+
 ## Web-First Workflow
 
 Start cloud UI:
@@ -38,12 +45,15 @@ Open `http://127.0.0.1:8000` and use:
 
 1. **New SKU Enrollment**:
 - Upload first video (`{sku}_0.MOV` is auto-assigned).
-- System auto-runs extraction and opens onboarding wizard.
-- Wizard supports browser box drawing (multi-box), negatives, and staged training progress.
+- Optional: add a product description to improve Gemini prompts.
+- System auto-runs extraction and Gemini seed prelabeling (24 frames) in background.
+- Review 3 seed frames once to establish trust, then model training continues automatically.
+- You return to dashboard immediately and track progress by SKU status/job stream.
 
 2. **Add Video + Quick Train** (existing SKU):
 - Upload append video (`{sku}_1.MOV`, `{sku}_2.MOV`, ...).
-- System auto-extracts with append mode and launches quick retraining wizard.
+- Trusted SKUs auto-extract, auto-label, and auto-retrain in background (no routine review).
+- If cloud labeling is unavailable, dashboard shows “Label manually?” fallback.
 
 3. **Full Train**:
 - Enabled after SKU has at least `v1` and `v2` stable models.

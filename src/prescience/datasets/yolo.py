@@ -295,16 +295,41 @@ def _write_quick_eval_artifacts(
             print(f"[eval] New model is better. Deleted old model dirs: {deleted}")
     metrics_payload["comparison"] = comparison
 
-    # Save one sample prediction image from val split for quick visual regression checks.
+    # Save one sample prediction image and confidence stats from val split.
     try:
         model = YOLO(str(best_model_path))
         val_dir = data_yaml.parent / "images" / "val"
-        sample = None
+        val_images: list[Path] = []
         for ext in ("*.jpg", "*.jpeg", "*.png"):
-            matches = sorted(val_dir.glob(ext))
-            if matches:
-                sample = matches[0]
-                break
+            val_images.extend(sorted(val_dir.glob(ext)))
+        max_confidence: float | None = None
+        top_conf_sum = 0.0
+        top_conf_count = 0
+        for sample_image in val_images:
+            preds = model.predict(source=str(sample_image), conf=0.001, imgsz=imgsz, verbose=False)
+            if not preds:
+                continue
+            boxes = preds[0].boxes
+            if boxes is None or len(boxes) == 0:
+                continue
+            confs = boxes.conf.cpu().numpy()
+            if confs.size == 0:
+                continue
+            frame_max = float(confs.max())
+            max_confidence = frame_max if max_confidence is None else max(max_confidence, frame_max)
+            top_conf_sum += frame_max
+            top_conf_count += 1
+
+        metrics_payload["prediction_stats"] = {
+            "val_images_scored": len(val_images),
+            "detections_scored": top_conf_count,
+            "max_confidence": max_confidence,
+            "mean_top_confidence": (top_conf_sum / top_conf_count) if top_conf_count else None,
+        }
+
+        sample = None
+        if val_images:
+            sample = val_images[0]
         if sample is not None:
             preds = model.predict(source=str(sample), conf=conf, imgsz=imgsz, verbose=False)
             if preds:
@@ -325,6 +350,13 @@ def _write_quick_eval_artifacts(
         f"- device: `{metrics_payload.get('device')}`",
         f"- ultralytics: `{metrics_payload.get('ultralytics_version')}`",
     ]
+    prediction_stats = metrics_payload.get("prediction_stats")
+    if isinstance(prediction_stats, dict):
+        summary_lines.extend(["", "## Prediction Stats"])
+        summary_lines.append(f"- val_images_scored: `{prediction_stats.get('val_images_scored')}`")
+        summary_lines.append(f"- detections_scored: `{prediction_stats.get('detections_scored')}`")
+        summary_lines.append(f"- max_confidence: `{prediction_stats.get('max_confidence')}`")
+        summary_lines.append(f"- mean_top_confidence: `{prediction_stats.get('mean_top_confidence')}`")
 
     old_model = metrics_payload.get("old_model")
     if isinstance(old_model, dict) and old_model:
